@@ -11,3 +11,4 @@ coverage
 .env.production
 .env.test
 *.log
+combined_project_files.txt
