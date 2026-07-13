@@ -1,0 +1,33 @@
+@import "tailwindcss";
+
+:root {
+  --background: #ffffff;
+  --foreground: #171717;
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --font-sans: var(--font-geist-sans);
+  --font-mono: var(--font-geist-mono);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: #0a0a0a;
+    --foreground: #ededed;
+  }
+}
+
+body {
+  background: var(--background);
+  color: var(--foreground);
+  font-family: Arial, Helvetica, sans-serif;
+}
+
+.prose a { color: #3b82f6; text-decoration: underline; }
+.prose h1 { font-size: 2.5rem; font-weight: bold; margin-bottom: 1rem; border-bottom: 1px solid #ccc; }
+.prose h2 { font-size: 1.8rem; font-weight: bold; margin-top: 2rem; border-bottom: 1px solid #eee; }
+.prose p { margin-bottom: 1rem; line-height: 1.6; }
+.prose ul { list-style-type: disc; margin-left: 1.5rem; }
+.prose .mw-editsection, .prose .infobox, .prose .navbox, .prose .reference { display: none; }
