@@ -2,10 +2,8 @@
 "use client";
 import React, { useEffect, useState, use } from 'react';
 import { useSearchParams } from 'next/navigation';
-import io from 'socket.io-client';
-import { ExternalLink, Loader2, Trophy } from 'lucide-react'; // Import icons
-
-let socket: any;
+import io, { Socket } from 'socket.io-client'; // Consolidated socket.io import
+import { ExternalLink, Loader2, Trophy } from 'lucide-react'; // Consolidated lucide-react import
 
 interface Player {
   id: string;
@@ -47,25 +45,48 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
   const [loadingArticle, setLoadingArticle] = useState(false);
   const [articleFetchError, setArticleFetchError] = useState<string | null>(null);
   const [goalArticleSummary, setGoalArticleSummary] = useState<ArticleSummary | null>(null);
+  const [socketInstance, setSocketInstance] = useState<Socket | null>(null); // State to hold the socket instance
 
-  // Initialize socket connection and join room
+  // 1. Initialize socket connection and emit joinRoom
   useEffect(() => {
-    socket = io('http://localhost:3001');
-    socket.emit('joinRoom', { roomId, username });
+    if (!username || !roomId) { // Ensure username and roomId are available before connecting
+        return;
+    }
 
-    socket.on('roomUpdate', (data: RoomData) => {
-      setRoomData(data);
+    const newSocket = io('http://localhost:3001');
+    setSocketInstance(newSocket); // Store the socket instance
+
+    newSocket.on('connect', () => {
+      newSocket.emit('joinRoom', { roomId, username });
     });
+    
+    return () => {
+        newSocket.disconnect();
+    };
+  }, [roomId, username]); // Dependencies for useEffect
+
+  // 2. Setup socket listeners for room updates
+  useEffect(() => {
+    if (!socketInstance) { // Ensure socket is initialized before adding listeners
+      return;
+    }
+
+    const handleRoomUpdate = (data: RoomData) => {
+      setRoomData(data);
+    };
+    
+    socketInstance.on('roomUpdate', handleRoomUpdate);
 
     return () => {
-        socket.disconnect();
+      socketInstance.off('roomUpdate', handleRoomUpdate);
     };
-  }, [roomId, username]);
+  }, [socketInstance]); // Depend on socketInstance
 
   // Fetch current article content
   useEffect(() => {
     const fetchContent = async () => {
-      const me = roomData?.players[socket.id];
+      // Safely get 'me' using optional chaining on socketInstance
+      const me = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined; 
       if (me && !me.finished && roomData?.status === 'playing') {
         setLoadingArticle(true);
         setArticleFetchError(null); // Clear previous errors
@@ -87,7 +108,7 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
       }
     };
     fetchContent();
-  }, [roomData?.players?.[socket?.id]?.currentArticle, roomData?.status]); // Re-fetch if status changes to playing
+  }, [roomData?.players?.[socketInstance?.id || '']?.currentArticle, roomData?.status, socketInstance?.id, roomData]); // Re-fetch if article or status changes, or socket id becomes available
 
   // Fetch goal article summary
   useEffect(() => {
@@ -115,25 +136,30 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
     const target = e.target as HTMLElement;
     const anchor = target.closest('a');
     
-    // Only proceed if it's a valid link and not trying to navigate while finished or loading
-    if (anchor && !loadingArticle && roomData?.status === 'playing' && !roomData.players[socket.id]?.finished) {
-      e.preventDefault();
-      const href = anchor.getAttribute('href');
-      // Ensure it's an internal Wikipedia link by checking href and title
-      if (href && href.startsWith('/wiki/')) {
-        const title = anchor.getAttribute('title') || href.replace('/wiki/', '');
-        socket.emit('navigate', { roomId, targetTitle: title });
+    // Only proceed if it's a valid link and game is in a playable state
+    // Use optional chaining for socketInstance and provide a fallback empty string for the key access
+    if (anchor && roomData?.status === 'playing' && !roomData.players[socketInstance?.id || '']?.finished) {
+      const dataTitle = anchor.getAttribute('data-title');
+
+      if (dataTitle) { // This link has a data-title, meaning it's an internal game navigation link
+        e.preventDefault(); // Prevent default browser navigation for this link
+        if (!loadingArticle && socketInstance) { // Only navigate if not currently loading another article AND socket is available
+          socketInstance.emit('navigate', { roomId, targetTitle: dataTitle });
+        }
       }
+      // If the link does NOT have a data-title attribute (e.g., an external link with target="_blank"),
+      // we do NOT call e.preventDefault(), allowing the browser to handle its default behavior.
     }
   };
 
-  if (!roomData) return (
+  if (!roomData || !socketInstance) return ( // Add check for socketInstance here
     <div className="flex items-center justify-center h-screen bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl">
       <Loader2 className="animate-spin mr-3 text-blue-500" size={24} /> Connecting to lobby...
     </div>
   );
 
-  const me = roomData.players[socket.id];
+  // Use socketInstance.id to get the current player's data
+  const me = roomData.players[socketInstance.id];
 
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-slate-900 font-sans">
@@ -161,8 +187,8 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
             <p className="text-xs text-blue-100 italic max-w-sm mt-1 hidden md:block">
               {goalArticleSummary.extract.substring(0, 100)}...
             </p>
-          )}
-        </div>
+            )}
+          </div>
 
         <div className="text-center mb-3 md:mb-0">
           <p className="text-xs text-blue-200 uppercase font-bold tracking-wider">Clicks</p>
@@ -172,7 +198,7 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
         <div className="text-center md:text-right">
             {roomData.status === 'waiting' ? (
                 <button 
-                    onClick={() => socket.emit('startGame', roomId)}
+                    onClick={() => socketInstance?.emit('startGame', roomId)} 
                     className="bg-green-500 text-white px-6 py-2 rounded-full font-bold shadow-md hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
                 >
                     Start Race
@@ -191,31 +217,34 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
         <aside className="w-64 bg-slate-100 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 p-4 overflow-y-auto hidden md:block shadow-inner">
           <h2 className="font-bold text-lg mb-4 pb-2 border-b border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200">Players</h2>
           <div className="space-y-3">
-            {Object.values(roomData.players).sort((a,b) => (a.finished === b.finished ? 0 : a.finished ? -1 : 1) || (a.clicks || 0) - (b.clicks || 0)).map((p: Player) => (
-              <div 
-                key={p.id} 
-                className={`p-3 rounded-lg shadow-sm transition-all duration-200 
-                            ${p.id === socket.id 
-                                ? 'bg-blue-50 border border-blue-200 dark:bg-blue-950 dark:border-blue-800' 
-                                : 'bg-white dark:bg-slate-700 border border-slate-100 dark:border-slate-600'}
-                            ${p.finished ? 'ring-2 ring-green-400 dark:ring-green-600' : ''}`}
-              >
-                <div className="flex items-center justify-between mb-1">
-                  <span className={`font-semibold text-sm truncate mr-2 ${p.id === socket.id ? 'text-blue-700 dark:text-blue-300' : 'text-slate-800 dark:text-slate-100'}`}>
-                    {p.username} {p.id === socket.id && '(You)'}
-                  </span>
-                  <span className="text-xs font-mono bg-slate-200 dark:bg-slate-600 text-slate-600 dark:text-slate-200 px-2 py-0.5 rounded-full">
-                    {p.clicks} clicks
-                  </span>
-                </div>
-                <div className="text-[11px] text-slate-500 dark:text-slate-400 italic truncate">{p.currentArticle.replace(/_/g, ' ')}</div>
-                {p.finished && (
-                  <div className="flex items-center text-green-600 dark:text-green-400 font-bold text-xs mt-2">
-                    <Trophy className="mr-1" size={12} /> WINNER! ({Math.floor(p.time || 0)}s)
+            {Object.values(roomData.players)
+              .filter((p): p is Player => p !== undefined && p !== null) // Defensively filter out any potential undefined/null entries
+              .sort((a,b) => (a.finished === b.finished ? 0 : a.finished ? -1 : 1) || (a.clicks || 0) - (b.clicks || 0))
+              .map((p: Player) => (
+                <div 
+                  key={p.id} // 'p' is now guaranteed to be a Player object
+                  className={`p-3 rounded-lg shadow-sm transition-all duration-200 
+                              ${p.id === socketInstance?.id 
+                                  ? 'bg-blue-50 border border-blue-200 dark:bg-blue-950 dark:border-blue-800' 
+                                  : 'bg-white dark:bg-slate-700 border border-slate-100 dark:border-slate-600'}
+                              ${p.finished ? 'ring-2 ring-green-400 dark:ring-green-600' : ''}`}
+                >
+                  <div className="flex items-center justify-between mb-1">
+                    <span className={`font-semibold text-sm truncate mr-2 ${p.id === socketInstance?.id ? 'text-blue-700 dark:text-blue-300' : 'text-slate-800 dark:text-slate-100'}`}>
+                      {p.username} {p.id === socketInstance?.id && '(You)'}
+                    </span>
+                    <span className="text-xs font-mono bg-slate-200 dark:bg-slate-600 text-slate-600 dark:text-slate-200 px-2 py-0.5 rounded-full">
+                      {p.clicks} clicks
+                    </span>
                   </div>
-                )}
-              </div>
-            ))}
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 italic truncate">{p.currentArticle.replace(/_/g, ' ')}</div>
+                  {p.finished && (
+                    <div className="flex items-center text-green-600 dark:text-green-400 font-bold text-xs mt-2">
+                      <Trophy className="mr-1" size={12} /> WINNER! ({Math.floor(p.time || 0)}s)
+                    </div>
+                  )}
+                </div>
+              ))}
           </div>
         </aside>
 
@@ -256,11 +285,14 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
                   <p className="text-sm mt-2">Please try navigating to a different link.</p>
                 </div>
               )}
-              <div 
-                className={`prose max-w-4xl mx-auto transition-all duration-300 ${loadingArticle ? 'opacity-50 blur-sm pointer-events-none' : 'opacity-100'}`}
-                onClick={handleWikiClick}
-                dangerouslySetInnerHTML={{ __html: html }}
-              />
+              {/* Wrap the prose content in a div to handle table overflow */}
+              <div className="article-content-wrapper">
+                <div 
+                  className={`prose transition-all duration-300 ${loadingArticle ? 'opacity-50 blur-sm pointer-events-none' : 'opacity-100'}`}
+                  onClick={handleWikiClick}
+                  dangerouslySetInnerHTML={{ __html: html }}
+                />
+              </div>
             </>
           )}
         </main>

@@ -4,6 +4,7 @@ const http = require('http');
 const { Server } = require('socket.io');
 const axios = require('axios');
 const cors = require('cors');
+const cheerio = require('cheerio'); // Import cheerio
 
 const app = express();
 app.use(cors());
@@ -36,50 +37,121 @@ async function getRandomArticle() {
     }
 }
 
+// NEW FUNCTION: Clean Wikipedia HTML
+function cleanWikipediaHtml(htmlContent) {
+    const $ = cheerio.load(htmlContent);
+
+    // 1. Remove unwanted elements based on common Wikipedia classes/structure
+    $('.mw-editsection, .infobox, .navbox, .reference, .sistersitebox, .noprint, .metadata, .hatnote, .ambox, .dablink, .portalbox, .catlinks, .reflist, #References, #External_links, #See_also, #Further_reading, #Notes, #Bibliography, .printfooter, .vector-menu-content-list, .mw-cite-backlink, .mw-ui-button').remove();
+
+    // 2. Remove all style attributes
+    $('*').removeAttr('style');
+
+    // 3. Remove most class attributes, except for specific ones we might want to preserve (e.g., for tables or special cases)
+    // For simplicity, we'll remove most to avoid conflicts and re-style with Tailwind.
+    $('*').each((i, el) => {
+        const $el = $(el);
+        // Only remove class if it's not a common semantic tag that might need a default styling
+        // E.g., don't remove classes from <table>, <thead>, <tbody>, <th>, <td> if you plan to use those for specific table styling.
+        // For now, let's be aggressive and remove all.
+        $el.removeAttr('class');
+        $el.removeAttr('id'); // Remove IDs as well to avoid conflicts
+        $el.removeAttr('data-mw');
+        $el.removeAttr('data-name');
+        // $el.removeAttr('title'); // Remove original title to ensure our custom links work - Keep for external links
+    });
+
+    // 4. Adjust internal links: Ensure they only navigate within our game
+    $('a').each((i, link) => {
+        const $link = $(link);
+        let href = $link.attr('href');
+        let title = $link.attr('title'); // Wikipedia links often have a title attribute
+
+        if (href && href.startsWith('/wiki/')) {
+            // Keep only the path part and normalize it for the game
+            const articleTitle = href.substring(6).split('#')[0]; // Remove /wiki/ and any #section
+            // Re-set href to a simple # or data-title for frontend to intercept, or just use the title
+            $link.attr('href', '#'); // Prevent default browser navigation
+            $link.attr('data-title', decodeURIComponent(articleTitle).replace(/_/g, ' ')); // Store article title for frontend to pick up
+            $link.removeAttr('title'); // Remove original title from internal links
+        } else {
+            // For external links, open in new tab and ensure a full URL if it's not already
+            if (href && !href.startsWith('http')) {
+                // Prepend base URL for truly relative external links (less common from parse API)
+                $link.attr('href', 'https://en.wikipedia.org' + href);
+            }
+            $link.attr('target', '_blank'); // Open external links in new tab
+            $link.attr('rel', 'noopener noreferrer');
+        }
+    });
+
+    // 5. Make image source URLs absolute
+    $('img').each((i, img) => {
+        const $img = $(img);
+        let src = $img.attr('src');
+        if (src && src.startsWith('//')) {
+            $img.attr('src', 'https:' + src);
+        } else if (src && src.startsWith('/')) {
+            // Handle relative paths for images, though Wikimedia usually uses // or full URLs
+            $img.attr('src', 'https://en.wikipedia.org' + src);
+        }
+        // Ensure images are not too large by default if width/height are set
+        $img.removeAttr('width').removeAttr('height');
+    });
+
+    // Add a class to tables for easier styling
+    $('table').addClass('wiki-table');
+    
+    // Remove "IPA" pronunciations - often appear in parentheses and are not central to the game
+    // This is a bit more aggressive and might remove some legitimate content, but common in article intros.
+    $('span.IPA').remove();
+    $('span[lang="en-fonipa"]').remove();
+    $('a.mw-disambig').removeAttr('class'); // Remove this class to style as regular links
+
+    return $.html();
+}
+
 async function getArticleData(title) {
     try {
+        // Request mobile format for slightly cleaner HTML, but we'll clean it further
         const url = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(title)}&format=json&prop=text|links&mobileformat=1&origin=*`;
         const res = await axios.get(url, { headers: wikiHeaders });
 
         // --- IMPROVED ERROR CHECKING HERE ---
-        // 1. Check for Wikipedia API errors (e.g., "missingtitle")
         if (res.data.error) {
             console.error("Wikipedia API 'parse' error for article:", title, res.data.error.info);
-            return null; // Article truly not found or has an API issue
+            return null;
         }
 
-        // 2. Check if the 'parse' object and its required properties are present
-        // This handles cases where the page exists but cannot be parsed for content (e.g., special pages, some redirects)
         if (!res.data.parse || !res.data.parse.text || !res.data.parse.links) {
             console.warn(`Wikipedia API 'parse' data missing for title: "${title}". This might be a special page or a problematic redirect.`);
-            return null; // Consider it 'not found' for our game's purpose
+            return null;
         }
-        // --- END IMPROVED ERROR CHECKING ---
         
-        const html = res.data.parse.text['*'];
+        // Use the cleaning function here
+        const rawHtml = res.data.parse.text['*'];
+        const cleanedHtml = cleanWikipediaHtml(rawHtml); // Apply cleaning
+        
         const links = res.data.parse.links.map(l => l['*']);
-        return { html, links };
+        return { html: cleanedHtml, links }; // Return cleaned HTML
     } catch (err) {
         console.error(`Error fetching article data for "${title}":`, err.message);
         return null;
     }
 }
 
-// NEW FUNCTION: Fetch article summary
+// NEW FUNCTION: Fetch article summary (already present, keep it)
 async function getArticleSummary(title) {
     try {
         const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
         const res = await axios.get(url, { headers: wikiHeaders });
         
-        // --- IMPROVED ERROR CHECKING FOR SUMMARY ---
-        // The summary API returns 200 for 'not found' but with specific content
         if (res.data.type === 'disambiguation' || res.data.title === 'Not found' || !res.data.extract) {
             console.warn(`Wikipedia summary API returned incomplete/non-standard data for: "${title}". Skipping.`);
             return null;
         }
-        // --- END IMPROVED ERROR CHECKING FOR SUMMARY ---
         
-        return res.data; // This typically includes title, extract, content_urls
+        return res.data;
     } catch (err) {
         console.error("Error fetching article summary:", err.message);
         return null;
@@ -129,7 +201,7 @@ io.on('connection', (socket) => {
         player.history.push(normalizedTarget);
 
         // Normalize goal article too for consistent comparison
-        const normalizedGoal = room.goalArticle.replace(/ /g, '_');
+        const normalizedGoal = room.goalArticle.replace(/_/g, '_');
 
         if (normalizedTarget.toLowerCase() === normalizedGoal.toLowerCase()) {
             player.finished = true;
@@ -143,14 +215,13 @@ io.on('connection', (socket) => {
 app.get('/api/wiki/:title', async (req, res) => {
     const data = await getArticleData(req.params.title);
     if (data) res.json(data);
-    else res.status(404).json({ error: "Article not found" }); // IMPORTANT: Send JSON even for 404
+    else res.status(404).json({ error: "Article not found" });
 });
 
-// NEW ENDPOINT: Get article summary
 app.get('/api/wiki-summary/:title', async (req, res) => {
     const data = await getArticleSummary(req.params.title);
     if (data) res.json(data);
-    else res.status(404).json({ error: "Summary not found" }); // Send JSON for 404
+    else res.status(404).json({ error: "Summary not found" });
 });
 
 server.listen(3001, () => console.log('Server running on port 3001'));

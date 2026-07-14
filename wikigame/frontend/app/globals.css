@@ -6,11 +6,14 @@
   --foreground: #171717;
   --primary-color: #3b82f6; /* Blue-600 */
   --accent-color: #fcd34d; /* Yellow-400 */
+  --border-color: #e2e8f0; /* Slate-200 */
+  --light-text: #64748b; /* Slate-500 */
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
+  --color-primary: var(--primary-color); /* <--- ADD THIS LINE */
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
@@ -21,6 +24,8 @@
     --foreground: #ededed;
     --primary-color: #60a5fa; /* Blue-400 */
     --accent-color: #fde047; /* Yellow-300 */
+    --border-color: #334155; /* Slate-700 */
+    --light-text: #94a3b8; /* Slate-400 */
   }
 }
 
@@ -29,27 +34,63 @@ body {
   color: var(--foreground);
   font-family: var(--font-geist-sans); /* Apply Geist Sans font */
   line-height: 1.6;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
-/* Enhanced Prose Styles for better readability and a clean look */
+/* Base Prose Styles for better readability and a clean look */
 .prose {
   @apply text-foreground; /* Use foreground color */
+  max-width: 800px; /* Max width for readability, can adjust */
+  margin-left: auto;
+  margin-right: auto;
+  padding: 1rem; /* Consistent padding */
 }
+
+/* Links */
 .prose a {
-  @apply text-primary-color underline hover:no-underline; /* Use primary color, underline, no underline on hover */
+  @apply text-primary underline hover:no-underline; /* <--- CHANGE THIS LINE */
+  word-break: break-word; /* Prevent long links from overflowing */
 }
+/* Style for links with data-title attribute (internal links for our game) */
+.prose a[data-title] {
+  @apply text-blue-700 dark:text-blue-300 font-medium;
+  /* Add specific styling to make them stand out as navigable within the game */
+}
+/* Style for external links */
+.prose a[target="_blank"] {
+  @apply text-slate-500 dark:text-slate-400 text-sm;
+  /* You can add an external link icon here if you want, e.g., using a background image */
+}
+
+
+/* Headings */
 .prose h1 {
-  @apply text-3xl md:text-4xl font-extrabold mb-4 pb-2 border-b border-slate-200 text-slate-800 dark:text-slate-100;
+  @apply text-3xl md:text-4xl font-extrabold mb-4 pb-2 border-b border-[var(--border-color)] text-slate-800 dark:text-slate-100;
+  margin-top: 0; /* Remove top margin for first h1 */
 }
 .prose h2 {
-  @apply text-2xl md:text-3xl font-bold mt-6 mb-3 pb-1 border-b border-slate-100 text-slate-700 dark:text-slate-200;
+  @apply text-2xl md:text-3xl font-bold mt-8 mb-3 pb-1 border-b border-[var(--border-color)] text-slate-700 dark:text-slate-200;
 }
 .prose h3 {
-  @apply text-xl md:text-2xl font-semibold mt-5 mb-2 text-slate-600 dark:text-slate-300;
+  @apply text-xl md:text-2xl font-semibold mt-6 mb-2 text-slate-600 dark:text-slate-300;
 }
+.prose h4 {
+  @apply text-lg md:text-xl font-semibold mt-5 mb-2 text-slate-600 dark:text-slate-400;
+}
+.prose h5 {
+  @apply text-base md:text-lg font-medium mt-4 mb-1 text-slate-500 dark:text-slate-400;
+}
+.prose h6 {
+  @apply text-sm md:text-base font-medium mt-3 mb-1 text-slate-500 dark:text-slate-500;
+}
+
+/* Paragraphs */
 .prose p {
   @apply mb-4 leading-relaxed;
 }
+
+/* Lists */
 .prose ul {
   @apply list-disc ml-6 mb-4;
 }
@@ -59,10 +100,83 @@ body {
 .prose li {
   @apply mb-1;
 }
+
+/* Strong / Bold text */
 .prose strong {
-  @apply font-semibold;
+  @apply font-semibold text-slate-800 dark:text-slate-200;
 }
-/* Hide Wikipedia specific elements that are not relevant for the game */
+
+/* Blockquotes */
+.prose blockquote {
+  @apply border-l-4 border-primary pl-4 italic text-slate-600 dark:text-slate-300 my-6;
+}
+
+/* Tables */
+.prose table.wiki-table {
+  @apply w-full border-collapse my-6 text-sm md:text-base;
+  /* Add overflow-x-auto to a wrapper div if you want tables to scroll horizontally on small screens */
+  /* This needs to be applied to a parent of the table, not the table itself */
+  display: block; /* Allows table to scroll if it's too wide */
+  overflow-x: auto; /* Horizontal scrolling for tables */
+  white-space: nowrap; /* Prevent text wrapping inside table cells for better scrolling */
+}
+.prose table.wiki-table th,
+.prose table.wiki-table td {
+  @apply border border-[var(--border-color)] px-4 py-2 text-left align-top;
+  white-space: normal; /* Allow text to wrap within cells once scrolled into view */
+}
+.prose table.wiki-table th {
+  @apply bg-slate-100 dark:bg-slate-700 font-semibold text-slate-700 dark:text-slate-200;
+}
+.prose table.wiki-table tr:nth-child(even) {
+  @apply bg-slate-50 dark:bg-slate-800; /* Zebra striping for readability */
+}
+
+/* Images */
+.prose img {
+  @apply max-w-full h-auto rounded-lg my-6 mx-auto block shadow-md;
+  /* For floating images, you might need to adjust this more specifically */
+  /* Wikipedia often wraps images in <figure> or divs for floating. */
+  /* Consider styling figures if they become problematic */
+}
+.prose figure {
+    @apply my-6 mx-auto;
+}
+.prose figcaption {
+    @apply text-center text-sm text-slate-500 dark:text-slate-400 mt-2;
+}
+
+/* Horizontal Rule */
+.prose hr {
+  @apply border-t border-[var(--border-color)] my-8;
+}
+
+/* Code and Preformatted Text */
+.prose code {
+  @apply bg-slate-100 dark:bg-slate-700 text-red-600 dark:text-red-400 p-1 rounded font-mono text-sm;
+}
+.prose pre {
+  @apply bg-slate-100 dark:bg-slate-800 p-4 rounded-lg overflow-x-auto text-sm font-mono my-6;
+}
+
+/* Superscript (e.g., for references) */
+.prose sup {
+  @apply text-xs align-super leading-none;
+}
+
+/* Definition lists */
+.prose dl {
+  @apply my-6;
+}
+.prose dt {
+  @apply font-semibold text-slate-800 dark:text-slate-200 mt-2;
+}
+.prose dd {
+  @apply ml-4 mb-2 text-slate-600 dark:text-slate-300;
+}
+
+/* Remove or hide Wikipedia-specific elements that are not relevant for the game */
+/* These are now mostly handled by the backend cleaning, but keep as fallback */
 .prose .mw-editsection,
 .prose .infobox,
 .prose .navbox,
@@ -90,4 +204,11 @@ body {
   to {
     transform: rotate(360deg);
   }
+}
+
+/* Utility to ensure article content container handles table overflow */
+.article-content-wrapper {
+  /* This div would wrap the `dangerouslySetInnerHTML` output */
+  overflow-x: auto;
+  padding-bottom: 1rem; /* Space for scrollbar */
 }
