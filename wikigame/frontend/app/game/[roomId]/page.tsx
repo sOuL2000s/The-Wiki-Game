@@ -67,7 +67,8 @@ export default function Game({ params }: { params: { roomId: string } }) {
         return;
     }
 
-    const newSocket = io('http://localhost:3001');
+    const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
+    const newSocket = io(BACKEND_URL);
     setSocketInstance(newSocket);
 
     newSocket.on('connect', () => {
