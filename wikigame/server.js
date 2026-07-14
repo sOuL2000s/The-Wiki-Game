@@ -161,14 +161,23 @@ async function getArticleSummary(title) {
 io.on('connection', (socket) => {
     socket.on('joinRoom', async ({ roomId, username }) => {
         socket.join(roomId);
+        // Store roomId on the socket for easier lookup on disconnect
+        socket.data.roomId = roomId;
         if (!rooms[roomId]) {
             rooms[roomId] = {
                 players: {},
                 startArticle: await getRandomArticle(),
                 goalArticle: await getRandomArticle(),
-                status: 'waiting'
+                status: 'waiting',
+                hostId: null // Initialize hostId
             };
         }
+        
+        // Assign host if this is the first player
+        if (Object.keys(rooms[roomId].players).length === 0) {
+            rooms[roomId].hostId = socket.id;
+        }
+
         rooms[roomId].players[socket.id] = {
             id: socket.id,
             username,
@@ -193,14 +202,29 @@ io.on('connection', (socket) => {
         const player = room?.players[socket.id];
         if (!room || !player || player.finished) return;
 
-        // Normalize titles for comparison before setting, helps with goal checking
+        // Normalize titles for Wikipedia API
         const normalizedTarget = targetTitle.replace(/ /g, '_');
-        
+
+        // IMPORTANT: Try to fetch the article data before committing to the navigation
+        // This ensures we only navigate to existing, loadable articles
+        const articleData = await getArticleData(normalizedTarget);
+
+        if (!articleData) {
+            // Article could not be found or loaded by the backend
+            console.warn(`Player ${player.username} attempted to navigate to "${targetTitle}" which could not be loaded.`);
+            socket.emit('articleNavigationError', {
+                message: `Oops! We couldn't load "${targetTitle}". It might have been deleted, renamed, or there was a temporary issue.`,
+                failedTargetTitle: targetTitle // Send the original target title back for a retry button
+            });
+            return; // Do not update player state or emit roomUpdate for this navigation
+        }
+
+        // If article data was successfully fetched, update player's state
         player.currentArticle = normalizedTarget;
         player.clicks += 1;
         player.history.push(normalizedTarget);
 
-        // Normalize goal article too for consistent comparison
+        // Normalize goal article for consistent comparison
         const normalizedGoal = room.goalArticle.replace(/_/g, '_');
 
         if (normalizedTarget.toLowerCase() === normalizedGoal.toLowerCase()) {
@@ -208,9 +232,66 @@ io.on('connection', (socket) => {
             player.time = (Date.now() - room.startTime) / 1000;
         }
 
+        // Emit room update to all players
         io.to(roomId).emit('roomUpdate', room);
     });
+
+    socket.on('leaveRoom', ({ roomId }) => {
+        handlePlayerLeave(socket, roomId); // Pass the socket object
+        socket.emit('roomLeftConfirmation'); // Confirm to the leaving client
+    });
+
+    socket.on('disconnect', () => {
+        const disconnectedFromRoomId = socket.data.roomId; // Use stored roomId
+        if (disconnectedFromRoomId) {
+            console.log(`Socket ${socket.id} disconnected from room ${disconnectedFromRoomId}`);
+            handlePlayerLeave(socket, disconnectedFromRoomId); // Pass the socket object
+        } else {
+            console.log(`Socket ${socket.id} disconnected, not found in any active room (socket.data.roomId was not set).`);
+        }
+    });
+
+    socket.on('chatMessage', ({ roomId, username, message }) => {
+        const room = rooms[roomId];
+        if (room && room.players[socket.id]) {
+            // Sanitize message to prevent XSS
+            const sanitizedMessage = message.replace(/</g, "&lt;").replace(/>/g, "&gt;");
+            io.to(roomId).emit('chatMessage', { username, message: sanitizedMessage, timestamp: Date.now() });
+        }
+    });
 });
+
+// Helper function to handle player leaving/disconnecting
+function handlePlayerLeave(socket, roomId) { // Pass the socket object directly
+    const socketId = socket.id; // Extract socketId from the socket object
+    const room = rooms[roomId];
+    if (room && room.players[socketId]) {
+        const username = room.players[socketId].username;
+        delete room.players[socketId];
+        socket.leave(roomId); // This line now correctly uses the passed socket object
+
+        // If the host leaves, assign a new host
+        if (room.hostId === socketId) {
+            const remainingPlayerIds = Object.keys(room.players);
+            if (remainingPlayerIds.length > 0) {
+                room.hostId = remainingPlayerIds[0];
+                console.log(`Host of room ${roomId} changed to ${room.players[room.hostId].username}`);
+            } else {
+                room.hostId = null; // No host if no players
+            }
+        }
+
+        if (Object.keys(room.players).length === 0) {
+            delete rooms[roomId]; // Delete room if empty
+            console.log(`Room ${roomId} is now empty and deleted.`);
+        } else {
+            io.to(roomId).emit('roomUpdate', room); // Notify remaining players
+            // Also send a chat message that a player left
+            io.to(roomId).emit('chatMessage', { username: 'System', message: `${username} has left the room.`, timestamp: Date.now() });
+        }
+        console.log(`Player ${username} (${socketId}) left room ${roomId}.`);
+    }
+}
 
 app.get('/api/wiki/:title', async (req, res) => {
     const data = await getArticleData(req.params.title);

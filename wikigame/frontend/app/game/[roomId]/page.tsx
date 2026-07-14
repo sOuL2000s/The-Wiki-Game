@@ -4,6 +4,7 @@ import React, { useEffect, useState, use } from 'react';
 import { useSearchParams } from 'next/navigation';
 import io, { Socket } from 'socket.io-client'; // Consolidated socket.io import
 import { ExternalLink, Loader2, Trophy } from 'lucide-react'; // Consolidated lucide-react import
+import { Menu } from 'lucide-react'; // Import Menu icon for mobile sidebar toggle
 
 interface Player {
   id: string;
@@ -19,8 +20,15 @@ interface RoomData {
   players: { [key: string]: Player };
   startArticle: string;
   goalArticle: string;
-  status: 'waiting' | 'playing' | 'finished'; // Added 'finished' for clarity
+  status: 'waiting' | 'playing' | 'finished';
   startTime?: number;
+  hostId: string | null; // New: ID of the room host
+}
+
+interface ChatMessage {
+  username: string;
+  message: string;
+  timestamp: number;
 }
 
 interface ArticleSummary {
@@ -33,7 +41,10 @@ interface ArticleSummary {
   };
 }
 
-export default function Game({ params }: { params: Promise<{ roomId: string }> }) {
+export default function Game({ params }: { params: { roomId: string } }) {
+  // FIX: Unwrap 'params' with React.use() as advised by the error message.
+  // This is necessary because in your experimental Next.js version, 'params'
+  // is treated as a Promise that must be resolved before accessing its properties.
   const resolvedParams = use(params);
   const roomId = resolvedParams.roomId;
   
@@ -44,8 +55,11 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
   const [html, setHtml] = useState<string>("");
   const [loadingArticle, setLoadingArticle] = useState(false);
   const [articleFetchError, setArticleFetchError] = useState<string | null>(null);
+  const [failedNavigationTarget, setFailedNavigationTarget] = useState<string | null>(null);
   const [goalArticleSummary, setGoalArticleSummary] = useState<ArticleSummary | null>(null);
-  const [socketInstance, setSocketInstance] = useState<Socket | null>(null); // State to hold the socket instance
+  const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]); // New: State for chat messages
+  const [chatInput, setChatInput] = useState(''); // New: State for chat input
 
   // 1. Initialize socket connection and emit joinRoom
   useEffect(() => {
@@ -54,12 +68,31 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
     }
 
     const newSocket = io('http://localhost:3001');
-    setSocketInstance(newSocket); // Store the socket instance
+    setSocketInstance(newSocket);
 
     newSocket.on('connect', () => {
       newSocket.emit('joinRoom', { roomId, username });
     });
-    
+
+    newSocket.on('articleNavigationError', ({ message, failedTargetTitle }) => {
+      console.error("Server reported navigation error:", message);
+      setArticleFetchError(message);
+      setFailedNavigationTarget(failedTargetTitle);
+      setLoadingArticle(false);
+    });
+
+    // New: Listen for chat messages
+    newSocket.on('chatMessage', (message: ChatMessage) => {
+      setChatMessages((prevMessages) => [...prevMessages, message]);
+    });
+
+    // New: Listen for room left confirmation to redirect
+    newSocket.on('roomLeftConfirmation', () => {
+      alert("You have left the room.");
+      // Redirect to home page
+      window.location.href = '/'; 
+    });
+
     return () => {
         newSocket.disconnect();
     };
@@ -73,6 +106,13 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
 
     const handleRoomUpdate = (data: RoomData) => {
       setRoomData(data);
+      // Clear error states if room update indicates successful navigation
+      // (i.e., if currentArticle has changed and there was a previous error)
+      const me = socketInstance?.id ? data?.players[socketInstance.id] : undefined;
+      if (me && me.currentArticle !== roomData?.players[socketInstance.id]?.currentArticle) {
+        setArticleFetchError(null);
+        setFailedNavigationTarget(null);
+      }
     };
     
     socketInstance.on('roomUpdate', handleRoomUpdate);
@@ -80,35 +120,44 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
     return () => {
       socketInstance.off('roomUpdate', handleRoomUpdate);
     };
-  }, [socketInstance]); // Depend on socketInstance
+  }, [socketInstance, roomData]); // Depend on socketInstance and roomData for comparison logic
 
-  // Fetch current article content
+  // Fetch current article content (only triggered when roomData.players[me.id].currentArticle changes)
   useEffect(() => {
     const fetchContent = async () => {
       // Safely get 'me' using optional chaining on socketInstance
       const me = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined; 
-      if (me && !me.finished && roomData?.status === 'playing') {
+      
+      // Only fetch if we are playing, the player is not finished, and we have an article to display
+      if (me && !me.finished && roomData?.status === 'playing' && me.currentArticle) {
         setLoadingArticle(true);
-        setArticleFetchError(null); // Clear previous errors
+        setArticleFetchError(null); // Clear previous errors (e.g., from a failed navigation attempt)
+        setFailedNavigationTarget(null);
         try {
             const res = await fetch(`http://localhost:3001/api/wiki/${encodeURIComponent(me.currentArticle)}`);
-            if (!res.ok) { // IMPORTANT: Check if response is OK
-                const errorData = await res.json(); // Backend now sends JSON for errors
+            if (!res.ok) { 
+                const errorData = await res.json(); 
                 throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
             }
             const data = await res.json();
-            setHtml(data.html);
-        } catch (e: any) {
-            console.error("Fetch article content error:", e.message);
-            setArticleFetchError(`Failed to load article: ${e.message}. Try another link.`);
-            setHtml(`<div class="text-red-500 font-semibold text-center mt-8">${articleFetchError}</div>`);
+            setHtml(data.html); 
+            window.scrollTo(0, 0); // Scroll to top when new article content is loaded
+        } catch (e: any) { // Removed window.scrollTo(0,0) from here
+            console.error("Frontend: Error fetching article content for display:", e.message);
+            // This error means the article's HTML couldn't be fetched *after* the server confirmed it exists.
+            // This is different from a navigation failure.
+            setArticleFetchError(`Failed to load article content for "${me.currentArticle.replace(/_/g, ' ')}": ${e.message}. You can try retrying.`);
+            setFailedNavigationTarget(me.currentArticle); // Allow retrying the current article's display
+            setHtml(`<div class="text-red-500 font-semibold text-center mt-8">
+                      <p>${articleFetchError || `Error fetching content for ${me.currentArticle.replace(/_/g, ' ')}.`}</p>
+                      <p class="text-sm mt-2">The server acknowledges you are on this page, but your browser couldn't load its content. Try again.</p>
+                     </div>`);
         }
         setLoadingArticle(false);
-        window.scrollTo(0, 0);
       }
     };
     fetchContent();
-  }, [roomData?.players?.[socketInstance?.id || '']?.currentArticle, roomData?.status, socketInstance?.id, roomData]); // Re-fetch if article or status changes, or socket id becomes available
+  }, [roomData?.players?.[socketInstance?.id || '']?.currentArticle, roomData?.status, socketInstance?.id]); // Re-fetch if article or status changes, or socket id becomes available
 
   // Fetch goal article summary
   useEffect(() => {
@@ -138,12 +187,18 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
     
     // Only proceed if it's a valid link and game is in a playable state
     // Use optional chaining for socketInstance and provide a fallback empty string for the key access
-    if (anchor && roomData?.status === 'playing' && !roomData.players[socketInstance?.id || '']?.finished) {
+    const myPlayer = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined;
+
+    if (anchor && roomData?.status === 'playing' && myPlayer && !myPlayer.finished) {
       const dataTitle = anchor.getAttribute('data-title');
 
       if (dataTitle) { // This link has a data-title, meaning it's an internal game navigation link
         e.preventDefault(); // Prevent default browser navigation for this link
         if (!loadingArticle && socketInstance) { // Only navigate if not currently loading another article AND socket is available
+          // Clear any previous error states before attempting a new navigation
+          setArticleFetchError(null);
+          setFailedNavigationTarget(null);
+          setLoadingArticle(true); // Set loading explicitly here, as server might take time to respond
           socketInstance.emit('navigate', { roomId, targetTitle: dataTitle });
         }
       }
@@ -151,6 +206,52 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
       // we do NOT call e.preventDefault(), allowing the browser to handle its default behavior.
     }
   };
+
+  const handleRetry = () => {
+    if (socketInstance && failedNavigationTarget) {
+      // Clear current error state and re-emit the navigation for the failed target
+      setArticleFetchError(null);
+      setFailedNavigationTarget(null);
+      setLoadingArticle(true);
+      socketInstance.emit('navigate', { roomId, targetTitle: failedNavigationTarget });
+    } else {
+        // Fallback for when failedNavigationTarget is not set, but an error is present
+        // This might happen if the *display* of the current page failed, not navigation.
+        const me = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined;
+        if (socketInstance && me?.currentArticle) {
+            setArticleFetchError(null);
+            setLoadingArticle(true);
+            // This will trigger a re-fetch via the useEffect for currentArticle
+            socketInstance.emit('navigate', { roomId, targetTitle: me.currentArticle.replace(/_/g, ' ') });
+        }
+    }
+  };
+
+  const handleGoBack = () => {
+    setArticleFetchError(null);
+    setFailedNavigationTarget(null);
+    setLoadingArticle(false);
+  };
+
+  // New: Handle leaving the room
+  const handleLeaveRoom = () => {
+    if (socketInstance && roomId && confirm("Are you sure you want to leave this room? Your progress will be lost.")) {
+      socketInstance.emit('leaveRoom', { roomId });
+    }
+  };
+
+  // New: Handle sending chat messages
+  const handleSendMessage = () => {
+    if (socketInstance && chatInput.trim() && username && roomId) {
+      socketInstance.emit('chatMessage', { 
+        roomId, 
+        username, 
+        message: chatInput 
+      });
+      setChatInput(''); // Clear input after sending
+    }
+  };
+
 
   if (!roomData || !socketInstance) return ( // Add check for socketInstance here
     <div className="flex items-center justify-center h-screen bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl">
@@ -187,16 +288,16 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
             <p className="text-xs text-blue-100 italic max-w-sm mt-1 hidden md:block">
               {goalArticleSummary.extract.substring(0, 100)}...
             </p>
-            )}
-          </div>
+          )}
+        </div>
 
         <div className="text-center mb-3 md:mb-0">
           <p className="text-xs text-blue-200 uppercase font-bold tracking-wider">Clicks</p>
           <p className="text-3xl font-mono leading-none text-yellow-300">{me?.clicks || 0}</p>
         </div>
 
-        <div className="text-center md:text-right">
-            {roomData.status === 'waiting' ? (
+        <div className="flex flex-col items-center md:items-end space-y-2">
+            {roomData.status === 'waiting' && socketInstance?.id === roomData.hostId ? (
                 <button 
                     onClick={() => socketInstance?.emit('startGame', roomId)} 
                     className="bg-green-500 text-white px-6 py-2 rounded-full font-bold shadow-md hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
@@ -209,6 +310,19 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
                     <p className="text-base font-medium italic text-blue-100 truncate max-w-[150px]">{me?.currentArticle.replace(/_/g, ' ')}</p>
                 </div>
             )}
+            <button 
+                onClick={handleLeaveRoom}
+                className="bg-red-500 text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-red-600 transition-colors text-sm"
+            >
+                Exit Room
+            </button>
+            {/* Mobile-only button to hint at sidebar content (players/chat) */}
+            <button
+                className="md:hidden bg-blue-500 text-white px-3 py-1.5 rounded-full font-bold shadow-md hover:bg-blue-600 transition-colors text-xs flex items-center gap-1 mt-2"
+                // onClick={() => { /* Implement mobile sidebar toggle logic here (e.g., open a modal/drawer) */ }}
+            >
+                <Menu size={16} /> Info
+            </button>
         </div>
       </div>
 
@@ -222,16 +336,17 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
               .sort((a,b) => (a.finished === b.finished ? 0 : a.finished ? -1 : 1) || (a.clicks || 0) - (b.clicks || 0))
               .map((p: Player) => (
                 <div 
-                  key={p.id} // 'p' is now guaranteed to be a Player object
+                  key={p.id}
                   className={`p-3 rounded-lg shadow-sm transition-all duration-200 
                               ${p.id === socketInstance?.id 
                                   ? 'bg-blue-50 border border-blue-200 dark:bg-blue-950 dark:border-blue-800' 
                                   : 'bg-white dark:bg-slate-700 border border-slate-100 dark:border-slate-600'}
-                              ${p.finished ? 'ring-2 ring-green-400 dark:ring-green-600' : ''}`}
+                              ${p.finished ? 'ring-2 ring-green-400 dark:ring-green-600' : ''}
+                              ${p.id === roomData.hostId ? 'ring-2 ring-yellow-400 dark:ring-yellow-600' : ''}` /* Highlight host */ }
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className={`font-semibold text-sm truncate mr-2 ${p.id === socketInstance?.id ? 'text-blue-700 dark:text-blue-300' : 'text-slate-800 dark:text-slate-100'}`}>
-                      {p.username} {p.id === socketInstance?.id && '(You)'}
+                      {p.username} {p.id === socketInstance?.id && '(You)'} {p.id === roomData.hostId && '(Host)'}
                     </span>
                     <span className="text-xs font-mono bg-slate-200 dark:bg-slate-600 text-slate-600 dark:text-slate-200 px-2 py-0.5 rounded-full">
                       {p.clicks} clicks
@@ -245,6 +360,37 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
                   )}
                 </div>
               ))}
+          </div>
+
+          {/* Chat Section */}
+          <div className="mt-8">
+            <h2 className="font-bold text-lg mb-4 pb-2 border-b border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200">Room Chat</h2>
+            <div className="bg-slate-50 dark:bg-slate-700 h-60 overflow-y-auto p-3 rounded-lg border border-slate-200 dark:border-slate-600 mb-3 flex flex-col space-y-2 text-sm" id="chatDisplay">
+              {chatMessages.map((msg, index) => (
+                <div key={index} className="flex items-start">
+                  <span className="font-semibold text-blue-600 dark:text-blue-300 mr-1 flex-shrink-0">{msg.username}:</span>
+                  {/* Add break-words for proper message wrapping */}
+                  <span className="text-slate-800 dark:text-slate-100 break-words">{msg.message}</span> 
+                </div>
+              ))}
+            </div>
+            <div className="flex">
+              <input
+                type="text"
+                placeholder="Type a message..."
+                className="flex-1 min-w-0 p-2 border border-slate-300 rounded-l-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none dark:bg-slate-600 dark:border-slate-500 dark:text-white text-sm" // Added min-w-0
+                value={chatInput}
+                onChange={(e) => setChatInput(e.target.value)}
+                onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
+              />
+              <button
+                onClick={handleSendMessage}
+                className="bg-blue-600 text-white px-4 py-2 rounded-r-lg font-semibold hover:bg-blue-700 transition-colors text-sm"
+                disabled={!chatInput.trim()}
+              >
+                Send
+              </button>
+            </div>
           </div>
         </aside>
 
@@ -279,19 +425,40 @@ export default function Game({ params }: { params: Promise<{ roomId: string }> }
                 </div>
               )}
               {articleFetchError && (
-                <div className="text-red-500 bg-red-50 dark:bg-red-950 p-4 rounded-lg mb-4 border border-red-200 dark:border-red-800 text-center">
-                  <p className="font-semibold">Error loading article:</p>
-                  <p>{articleFetchError}</p>
-                  <p className="text-sm mt-2">Please try navigating to a different link.</p>
+                <div className="text-red-500 bg-red-50 dark:bg-red-950 p-4 rounded-lg mb-4 border border-red-200 dark:border-red-800 text-center mx-auto max-w-lg">
+                  <p className="font-semibold text-lg mb-2">Error!</p>
+                  <p className="text-base">{articleFetchError}</p>
+                  <div className="flex justify-center space-x-4 mt-4">
+                    {failedNavigationTarget && ( // Show retry button if we know which article failed to load
+                        <button
+                            onClick={handleRetry}
+                            className="bg-red-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-red-700 transition-colors"
+                        >
+                            Retry Loading Article
+                        </button>
+                    )}
+                    <button
+                      onClick={handleGoBack}
+                      className="bg-blue-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-blue-700 transition-colors"
+                    >
+                      Go Back to Previous Page
+                    </button>
+                  </div>
                 </div>
               )}
               {/* Wrap the prose content in a div to handle table overflow */}
               <div className="article-content-wrapper">
                 <div 
-                  className={`prose transition-all duration-300 ${loadingArticle ? 'opacity-50 blur-sm pointer-events-none' : 'opacity-100'}`}
+                  className={`prose transition-all duration-300 ${loadingArticle ? 'opacity-50 blur-sm pointer-events-none' : 'opacity-100'} ${articleFetchError ? 'hidden' : ''}`}
                   onClick={handleWikiClick}
                   dangerouslySetInnerHTML={{ __html: html }}
                 />
+                {/* When there's an error, display current article name for context */}
+                {articleFetchError && (
+                    <div className="text-center text-slate-500 dark:text-slate-400 mt-6">
+                        <p>Currently viewing: <span className="font-semibold">{me?.currentArticle.replace(/_/g, ' ') || 'Unknown'}</span></p>
+                    </div>
+                )}
               </div>
             </>
           )}
