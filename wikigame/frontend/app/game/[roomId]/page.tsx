@@ -61,13 +61,15 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]); // New: State for chat messages
   const [chatInput, setChatInput] = useState(''); // New: State for chat input
 
+  const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:3001';
+
   // 1. Initialize socket connection and emit joinRoom
   useEffect(() => {
     if (!username || !roomId) { // Ensure username and roomId are available before connecting
         return;
     }
 
-    const newSocket = io('http://localhost:3001');
+    const newSocket = io(serverUrl);
     setSocketInstance(newSocket);
 
     newSocket.on('connect', () => {
@@ -134,7 +136,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
         setArticleFetchError(null); // Clear previous errors (e.g., from a failed navigation attempt)
         setFailedNavigationTarget(null);
         try {
-            const res = await fetch(`http://localhost:3001/api/wiki/${encodeURIComponent(me.currentArticle)}`);
+            const res = await fetch(`${serverUrl}/api/wiki/${encodeURIComponent(me.currentArticle)}`);
             if (!res.ok) { 
                 const errorData = await res.json(); 
                 throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
@@ -164,7 +166,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
     const fetchSummary = async () => {
       if (roomData?.goalArticle && !goalArticleSummary) { // Fetch only once
         try {
-          const res = await fetch(`http://localhost:3001/api/wiki-summary/${encodeURIComponent(roomData.goalArticle)}`);
+          const res = await fetch(`${serverUrl}/api/wiki-summary/${encodeURIComponent(roomData.goalArticle)}`);
           if (!res.ok) {
             const errorData = await res.json();
             throw new Error(errorData.error || `HTTP error! status: ${res.status}`);
@@ -254,8 +256,10 @@ export default function Game({ params }: { params: { roomId: string } }) {
 
 
   if (!roomData || !socketInstance) return ( // Add check for socketInstance here
-    <div className="flex items-center justify-center h-screen bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl">
-      <Loader2 className="animate-spin mr-3 text-blue-500" size={24} /> Connecting to lobby...
+    <div className="flex flex-col items-center justify-center h-screen bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl">
+      <Loader2 className="animate-spin mb-4 text-blue-500" size={32} />
+      <p>Connecting to the room...</p>
+      <p className="text-sm mt-2 opacity-50">If this takes long, ensure the backend is running.</p>
     </div>
   );
 
