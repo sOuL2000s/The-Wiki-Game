@@ -61,7 +61,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]); // New: State for chat messages
   const [chatInput, setChatInput] = useState(''); // New: State for chat input
 
-  const serverUrl = process.env.NEXT_PUBLIC_SERVER_URL || 'http://localhost:3001';
+  const serverUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
   // 1. Initialize socket connection and emit joinRoom
   useEffect(() => {
