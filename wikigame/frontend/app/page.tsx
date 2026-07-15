@@ -8,7 +8,8 @@ export default function Home() {
   const [room, setRoom] = useState('');
   const router = useRouter();
 
-  const handleJoin = () => {
+  const handleJoin = (e?: React.FormEvent) => {
+    if (e) e.preventDefault();
     if (username && room) {
       router.push(`/game/${room}?user=${username}`);
     }
@@ -19,7 +20,7 @@ export default function Home() {
       <div className="w-full max-w-md bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700">
         <h1 className="text-4xl font-bold text-center mb-8 text-blue-600 dark:text-blue-400 tracking-tight">WikiRace</h1>
         <p className="text-center text-slate-600 dark:text-slate-300 mb-6">Race to the goal article in the fewest clicks!</p>
-        <div className="space-y-4">
+        <form onSubmit={handleJoin} className="space-y-4">
           <input
             type="text"
             placeholder="Your Username"
@@ -35,13 +36,13 @@ export default function Home() {
             onChange={(e) => setRoom(e.target.value)}
           />
           <button
-            onClick={handleJoin}
+            type="submit"
             disabled={!username || !room}
             className="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-blue-500 dark:hover:bg-blue-600"
           >
             Enter Race
           </button>
-        </div>
+        </form>
       </div>
     </main>
   );
