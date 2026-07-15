@@ -58,8 +58,13 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const [failedNavigationTarget, setFailedNavigationTarget] = useState<string | null>(null);
   const [goalArticleSummary, setGoalArticleSummary] = useState<ArticleSummary | null>(null);
   const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
-  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]); // New: State for chat messages
-  const [chatInput, setChatInput] = useState(''); // New: State for chat input
+  const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
+  const [chatInput, setChatInput] = useState('');
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false); // New: State for mobile sidebar visibility
+
+  const chatDisplayRef = React.useRef<HTMLDivElement>(null); // New: Ref for chat auto-scrolling
+  const headerRef = React.useRef<HTMLDivElement>(null); // Ref for header to measure its height
+  const [headerHeight, setHeaderHeight] = useState(0); // State to store header height
 
   const serverUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
@@ -124,6 +129,21 @@ export default function Game({ params }: { params: { roomId: string } }) {
     };
   }, [socketInstance, roomData]); // Depend on socketInstance and roomData for comparison logic
 
+  // Effect to measure header height on component mount and whenever roomData or other layout affecting states change
+  useEffect(() => {
+    if (headerRef.current) {
+      setHeaderHeight(headerRef.current.offsetHeight);
+    }
+    // Re-measure on window resize to handle responsiveness
+    const handleResize = () => {
+      if (headerRef.current) {
+        setHeaderHeight(headerRef.current.offsetHeight);
+      }
+    };
+    window.addEventListener('resize', handleResize);
+    return () => window.removeEventListener('resize', handleResize);
+  }, [roomData, showMobileSidebar]); // Also re-measure if sidebar visibility changes which might affect main layout or header rendering
+
   // Fetch current article content (only triggered when roomData.players[me.id].currentArticle changes)
   useEffect(() => {
     const fetchContent = async () => {
@@ -132,8 +152,8 @@ export default function Game({ params }: { params: { roomId: string } }) {
       
       // Only fetch if we are playing, the player is not finished, and we have an article to display
       if (me && !me.finished && roomData?.status === 'playing' && me.currentArticle) {
-        setLoadingArticle(true);
-        setArticleFetchError(null); // Clear previous errors (e.g., from a failed navigation attempt)
+        setLoadingArticle(true); // Set loading ON for content fetch
+        setArticleFetchError(null); 
         setFailedNavigationTarget(null);
         try {
             const res = await fetch(`${serverUrl}/api/wiki/${encodeURIComponent(me.currentArticle)}`);
@@ -143,23 +163,22 @@ export default function Game({ params }: { params: { roomId: string } }) {
             }
             const data = await res.json();
             setHtml(data.html); 
-            window.scrollTo(0, 0); // Scroll to top when new article content is loaded
-        } catch (e: any) { // Removed window.scrollTo(0,0) from here
+            window.scrollTo(0, 0); 
+            setLoadingArticle(false); // Set loading OFF on success
+        } catch (e: any) { 
             console.error("Frontend: Error fetching article content for display:", e.message);
-            // This error means the article's HTML couldn't be fetched *after* the server confirmed it exists.
-            // This is different from a navigation failure.
             setArticleFetchError(`Failed to load article content for "${me.currentArticle.replace(/_/g, ' ')}": ${e.message}. You can try retrying.`);
-            setFailedNavigationTarget(me.currentArticle); // Allow retrying the current article's display
+            setFailedNavigationTarget(me.currentArticle); 
             setHtml(`<div class="text-red-500 font-semibold text-center mt-8">
                       <p>${articleFetchError || `Error fetching content for ${me.currentArticle.replace(/_/g, ' ')}.`}</p>
                       <p class="text-sm mt-2">The server acknowledges you are on this page, but your browser couldn't load its content. Try again.</p>
                      </div>`);
+            setLoadingArticle(false); // Set loading OFF on error
         }
-        setLoadingArticle(false);
       }
     };
     fetchContent();
-  }, [roomData?.players?.[socketInstance?.id || '']?.currentArticle, roomData?.status, socketInstance?.id]); // Re-fetch if article or status changes, or socket id becomes available
+  }, [roomData?.players?.[socketInstance?.id || '']?.currentArticle, roomData?.status, socketInstance?.id, serverUrl]); // Re-fetch if article or status changes, or socket id becomes available
 
   // Fetch goal article summary
   useEffect(() => {
@@ -183,6 +202,13 @@ export default function Game({ params }: { params: { roomId: string } }) {
   }, [roomData?.goalArticle, goalArticleSummary]);
 
 
+  // New: Auto-scroll chat to bottom when messages change
+  useEffect(() => {
+    if (chatDisplayRef.current) {
+      chatDisplayRef.current.scrollTop = chatDisplayRef.current.scrollHeight;
+    }
+  }, [chatMessages]);
+
   const handleWikiClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     const anchor = target.closest('a');
@@ -194,35 +220,29 @@ export default function Game({ params }: { params: { roomId: string } }) {
     if (anchor && roomData?.status === 'playing' && myPlayer && !myPlayer.finished) {
       const dataTitle = anchor.getAttribute('data-title');
 
-      if (dataTitle) { // This link has a data-title, meaning it's an internal game navigation link
-        e.preventDefault(); // Prevent default browser navigation for this link
-        if (!loadingArticle && socketInstance) { // Only navigate if not currently loading another article AND socket is available
-          // Clear any previous error states before attempting a new navigation
+      if (dataTitle) { 
+        e.preventDefault(); 
+        if (!loadingArticle && socketInstance) { 
           setArticleFetchError(null);
           setFailedNavigationTarget(null);
-          setLoadingArticle(true); // Set loading explicitly here, as server might take time to respond
+          setLoadingArticle(true); // Set loading ON immediately on click
           socketInstance.emit('navigate', { roomId, targetTitle: dataTitle });
         }
       }
-      // If the link does NOT have a data-title attribute (e.g., an external link with target="_blank"),
-      // we do NOT call e.preventDefault(), allowing the browser to handle its default behavior.
     }
   };
 
   const handleRetry = () => {
     if (socketInstance && failedNavigationTarget) {
-      // Clear current error state and re-emit the navigation for the failed target
       setArticleFetchError(null);
       setFailedNavigationTarget(null);
-      setLoadingArticle(true);
+      setLoadingArticle(true); // Set loading ON for retry
       socketInstance.emit('navigate', { roomId, targetTitle: failedNavigationTarget });
     } else {
-        // Fallback for when failedNavigationTarget is not set, but an error is present
-        // This might happen if the *display* of the current page failed, not navigation.
         const me = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined;
         if (socketInstance && me?.currentArticle) {
             setArticleFetchError(null);
-            setLoadingArticle(true);
+            setLoadingArticle(true); // Set loading ON for retry even if target unknown
             // This will trigger a re-fetch via the useEffect for currentArticle
             socketInstance.emit('navigate', { roomId, targetTitle: me.currentArticle.replace(/_/g, ' ') });
         }
@@ -232,7 +252,18 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const handleGoBack = () => {
     setArticleFetchError(null);
     setFailedNavigationTarget(null);
-    setLoadingArticle(false);
+    setLoadingArticle(false); // Ensure loading is OFF when going back from an error
+    
+    // If player has history, navigate to the previous article
+    const me = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined;
+    if (me && me.history.length > 1) {
+        const previousArticle = me.history[me.history.length - 2];
+        socketInstance.emit('navigate', { roomId, targetTitle: previousArticle.replace(/_/g, ' ') });
+    } else {
+        // If no history, or only start article, just clear the error and display start article again
+        // (the useEffect for currentArticle will re-trigger and fetch the same article if it's still current)
+        console.log("No previous article to go back to.");
+    }
   };
 
   // New: Handle leaving the room
@@ -269,7 +300,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
   return (
     <div className="flex flex-col h-screen bg-white dark:bg-slate-900 font-sans">
       {/* Header */}
-      <div className="bg-gradient-to-r from-blue-700 to-indigo-700 text-white p-4 flex flex-col md:flex-row justify-between items-center sticky top-0 z-50 shadow-lg dark:from-slate-800 dark:to-slate-900">
+      <div ref={headerRef} className="bg-gradient-to-r from-blue-700 to-indigo-700 text-white p-4 flex flex-col md:flex-row justify-between items-center sticky top-0 z-50 shadow-lg dark:from-slate-800 dark:to-slate-900">
         <div className="text-center md:text-left mb-3 md:mb-0">
           <p className="text-xs text-blue-200 uppercase font-bold tracking-wider">Goal Article</p>
           <div className="flex items-center justify-center md:justify-start">
@@ -320,23 +351,33 @@ export default function Game({ params }: { params: { roomId: string } }) {
             >
                 Exit Room
             </button>
-            {/* Mobile-only button to hint at sidebar content (players/chat) */}
+            {/* Mobile-only button to toggle sidebar */}
             <button
                 className="md:hidden bg-blue-500 text-white px-3 py-1.5 rounded-full font-bold shadow-md hover:bg-blue-600 transition-colors text-xs flex items-center gap-1 mt-2"
-                // onClick={() => { /* Implement mobile sidebar toggle logic here (e.g., open a modal/drawer) */ }}
+                onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+                aria-expanded={showMobileSidebar}
+                aria-controls="mobile-sidebar"
             >
-                <Menu size={16} /> Info
+                <Menu size={16} /> {showMobileSidebar ? 'Hide' : 'Show'} Info
             </button>
         </div>
       </div>
 
       <div className="flex flex-1 overflow-hidden">
-        {/* Leaderboard Sidebar */}
-        <aside className="w-64 bg-slate-100 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 p-4 overflow-y-auto hidden md:block shadow-inner">
+        {/* Leaderboard & Chat Sidebar */}
+        <aside 
+          id="mobile-sidebar"
+          className={`
+            w-64 bg-slate-100 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 p-4 overflow-y-auto shadow-inner
+            fixed left-0 bottom-0 z-40 transform transition-transform duration-300 ease-in-out md:static
+            ${showMobileSidebar ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
+          `}
+          style={{ top: `${headerHeight}px` }} // Apply dynamic top position
+        >
           <h2 className="font-bold text-lg mb-4 pb-2 border-b border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200">Players</h2>
           <div className="space-y-3">
             {Object.values(roomData.players)
-              .filter((p): p is Player => p !== undefined && p !== null) // Defensively filter out any potential undefined/null entries
+              .filter((p): p is Player => p !== undefined && p !== null)
               .sort((a,b) => (a.finished === b.finished ? 0 : a.finished ? -1 : 1) || (a.clicks || 0) - (b.clicks || 0))
               .map((p: Player) => (
                 <div 
@@ -346,7 +387,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
                                   ? 'bg-blue-50 border border-blue-200 dark:bg-blue-950 dark:border-blue-800' 
                                   : 'bg-white dark:bg-slate-700 border border-slate-100 dark:border-slate-600'}
                               ${p.finished ? 'ring-2 ring-green-400 dark:ring-green-600' : ''}
-                              ${p.id === roomData.hostId ? 'ring-2 ring-yellow-400 dark:ring-yellow-600' : ''}` /* Highlight host */ }
+                              ${p.id === roomData.hostId ? 'ring-2 ring-yellow-400 dark:ring-yellow-600' : ''}` }
                 >
                   <div className="flex items-center justify-between mb-1">
                     <span className={`font-semibold text-sm truncate mr-2 ${p.id === socketInstance?.id ? 'text-blue-700 dark:text-blue-300' : 'text-slate-800 dark:text-slate-100'}`}>
@@ -369,11 +410,10 @@ export default function Game({ params }: { params: { roomId: string } }) {
           {/* Chat Section */}
           <div className="mt-8">
             <h2 className="font-bold text-lg mb-4 pb-2 border-b border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200">Room Chat</h2>
-            <div className="bg-slate-50 dark:bg-slate-700 h-60 overflow-y-auto p-3 rounded-lg border border-slate-200 dark:border-slate-600 mb-3 flex flex-col space-y-2 text-sm" id="chatDisplay">
+            <div ref={chatDisplayRef} className="bg-slate-50 dark:bg-slate-700 h-60 overflow-y-auto p-3 rounded-lg border border-slate-200 dark:border-slate-600 mb-3 flex flex-col space-y-2 text-sm">
               {chatMessages.map((msg, index) => (
                 <div key={index} className="flex items-start">
                   <span className="font-semibold text-blue-600 dark:text-blue-300 mr-1 flex-shrink-0">{msg.username}:</span>
-                  {/* Add break-words for proper message wrapping */}
                   <span className="text-slate-800 dark:text-slate-100 break-words">{msg.message}</span> 
                 </div>
               ))}
@@ -382,7 +422,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
               <input
                 type="text"
                 placeholder="Type a message..."
-                className="flex-1 min-w-0 p-2 border border-slate-300 rounded-l-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none dark:bg-slate-600 dark:border-slate-500 dark:text-white text-sm" // Added min-w-0
+                className="flex-1 min-w-0 p-2 border border-slate-300 rounded-l-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none dark:bg-slate-600 dark:border-slate-500 dark:text-white text-sm"
                 value={chatInput}
                 onChange={(e) => setChatInput(e.target.value)}
                 onKeyPress={(e) => e.key === 'Enter' && handleSendMessage()}
@@ -400,6 +440,14 @@ export default function Game({ params }: { params: { roomId: string } }) {
 
         {/* Main Content Area */}
         <main className="flex-1 overflow-y-auto p-4 md:p-10 bg-white dark:bg-slate-900 relative">
+          {/* Overlay to close sidebar on mobile when main content is clicked */}
+          {showMobileSidebar && (
+            <div 
+              className="md:hidden fixed inset-0 bg-black bg-opacity-50 z-30" 
+              onClick={() => setShowMobileSidebar(false)}
+            ></div>
+          )}
+
           {roomData.status === 'waiting' ? (
             <div className="flex flex-col items-center justify-center h-full text-slate-400 dark:text-slate-500">
               <Loader2 className="animate-spin text-blue-500 dark:text-blue-400 mb-4" size={48} />
