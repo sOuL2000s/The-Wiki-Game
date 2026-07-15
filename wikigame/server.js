@@ -305,4 +305,5 @@ app.get('/api/wiki-summary/:title', async (req, res) => {
     else res.status(404).json({ error: "Summary not found" });
 });
 
-server.listen(3001, () => console.log('Server running on port 3001'));
+const PORT = process.env.PORT || 3001; // Use Render's assigned port, or 3001 locally
+server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
