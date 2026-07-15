@@ -18,7 +18,10 @@ export default function Home() {
   return (
     <main className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4 dark:from-slate-900 dark:to-slate-800">
       <div className="w-full max-w-md bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700">
-        <h1 className="text-4xl font-bold text-center mb-8 text-blue-600 dark:text-blue-400 tracking-tight">WikiRace</h1>
+        <div className="flex flex-col items-center mb-8">
+          <img src="/logo.svg" alt="WikiRace Logo" className="w-20 h-20 mb-4 drop-shadow-md" />
+          <h1 className="text-4xl font-bold text-center text-blue-600 dark:text-blue-400 tracking-tight">WikiRace</h1>
+        </div>
         <p className="text-center text-slate-600 dark:text-slate-300 mb-6">Race to the goal article in the fewest clicks!</p>
         <form onSubmit={handleJoin} className="space-y-4">
           <input
