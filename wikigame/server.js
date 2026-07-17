@@ -30,10 +30,13 @@ async function getRandomArticle() {
             console.log(`Skipping problematic random article: ${res.data.title}`);
             return getRandomArticle(); // Try again
         }
-        return res.data.title;
+        return {
+            title: res.data.title,
+            pageid: res.data.pageid
+        };
     } catch (err) {
         console.error("Error getting random article:", err.message);
-        return "Fruit"; // Fallback
+        return { title: "Fruit", pageid: 5970 }; // Fallback
     }
 }
 
@@ -117,42 +120,83 @@ async function getHint(currentTitle, targetTitle) {
         const cur = currentTitle.replace(/_/g, ' ');
         const tar = targetTitle.replace(/_/g, ' ');
 
-        // 1. Get links on current page and links to target
-        // 2. Also get categories of target to provide "thematic" hints
-        const [currentRes, targetRes, targetCats] = await Promise.all([
-            axios.get(`https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(cur)}&prop=links&format=json`, { headers: wikiHeaders }),
+        // 1. Get current page data and target summary simultaneously
+        const [articleData, targetSummary] = await Promise.all([
+            getArticleData(cur),
+            getArticleSummary(tar)
+        ]);
+
+        if (!articleData) return ["Try navigating to a more general topic first."];
+
+        const currentLinks = articleData.links;
+
+        // 2. Get links that lead TO the target article (backlinks) and target categories
+        const [targetRes, targetCats] = await Promise.all([
             axios.get(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(tar)}&prop=linkshere&lhlimit=500&format=json`, { headers: wikiHeaders }),
             axios.get(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(tar)}&prop=categories&cllimit=50&format=json`, { headers: wikiHeaders })
         ]);
 
-        if (currentRes.data.error || targetRes.data.error) return [];
-
-        const currentLinks = currentRes.data.parse?.links?.map(l => l['*']) || [];
         const pages = targetRes.data.query?.pages || {};
         const pageId = Object.keys(pages)[0];
         const linksToTarget = pages[pageId]?.linkshere?.map(l => l.title) || [];
 
-        // Direct 1-click hints
-        const directHints = currentLinks.filter(link => linksToTarget.includes(link));
-        if (directHints.length > 0) return directHints.slice(0, 3);
+        // STRATEGY 0: Check if goal is directly linked
+        if (currentLinks.some(l => l.toLowerCase() === tar.toLowerCase())) {
+            return [tar];
+        }
 
-        // If no direct link, find links that share words with target title or its categories
-        const tarWords = tar.toLowerCase().split(' ').filter(w => w.length > 3);
+        // STRATEGY A: Direct 1-click connection (Level 2 BFS - Backlinks)
+        const directHints = currentLinks.filter(link => linksToTarget.includes(link));
+        if (directHints.length > 0) {
+            return directHints.sort((a, b) => a.length - b.length).slice(0, 2);
+        }
+
+        // STRATEGY B: Semantic Scoring (Keyword Overlap)
+        const getKeywords = (text) => text.toLowerCase()
+            .replace(/[^a-z0-9\s]/g, '')
+            .split(/\s+/)
+            .filter(w => w.length > 4 && !['about', 'after', 'before', 'could', 'every', 'from', 'great', 'have', 'their', 'there', 'these', 'they', 'this', 'were', 'which', 'would'].includes(w));
+
+        const targetKeywords = new Set([
+            ...getKeywords(tar),
+            ...(targetSummary ? getKeywords(targetSummary.extract) : [])
+        ]);
+
+        const scoredLinks = currentLinks.map(link => {
+            const linkWords = getKeywords(link);
+            let score = 0;
+            linkWords.forEach(word => {
+                if (targetKeywords.has(word)) score += 2;
+                targetKeywords.forEach(tWord => {
+                    if (tWord.includes(word) || word.includes(tWord)) score += 1;
+                });
+            });
+            return { link, score };
+        }).filter(item => item.score > 0).sort((a, b) => b.score - a.score);
+
+        if (scoredLinks.length > 0) return scoredLinks.slice(0, 2).map(i => i.link);
+
+        // STRATEGY C: Category matching
         const catPages = targetCats.data.query?.pages || {};
         const catPageId = Object.keys(catPages)[0];
-        const categories = catPages[catPageId]?.categories?.map(c => c.title.replace('Category:', '').toLowerCase()) || [];
+        const categories = (catPages[catPageId]?.categories?.map(c => c.title.replace('Category:', '').toLowerCase()) || [])
+            .filter(c => !c.includes('articles') && !c.includes('wikipedia') && !c.includes('webarchive'));
         
-        const semanticHints = currentLinks.filter(link => {
+        const catHints = currentLinks.filter(link => {
             const l = link.toLowerCase();
-            return tarWords.some(word => l.includes(word)) || categories.some(cat => l.includes(cat));
+            return categories.some(cat => l.includes(cat) || cat.includes(l));
         });
-
-        if (semanticHints.length > 0) return semanticHints.slice(0, 3);
+        if (catHints.length > 0) return catHints.slice(0, 2);
         
-        // Fallback: Significant links
-        return currentLinks.filter(l => !/\d{4}/.test(l) && l.length > 5).slice(0, 2);
+        // STRATEGY D: General direction (Broad topics)
+        const broadTopics = ['History', 'Geography', 'Science', 'Society', 'Culture', 'Technology', 'Mathematics', 'Philosophy', 'Art', 'Nature'];
+        const broadHints = currentLinks.filter(l => broadTopics.some(t => l.includes(t)));
+        if (broadHints.length > 0) return broadHints.slice(0, 2);
+
+        return ["Try navigating to a more general topic first."];
     } catch (err) {
-        return [];
+        console.error("Hint generation failed:", err.message);
+        return ["Try a related major category."];
     }
 }
 
@@ -177,8 +221,23 @@ async function getArticleData(title) {
         const rawHtml = res.data.parse.text['*'];
         const cleanedHtml = cleanWikipediaHtml(rawHtml); // Apply cleaning
         
-        const links = res.data.parse.links.map(l => l['*']);
-        return { html: cleanedHtml, links }; // Return cleaned HTML
+        // Extract links from the CLEANED HTML so hints match visible content
+        const $ = cheerio.load(cleanedHtml);
+        const visibleLinks = [];
+        $('a[data-title]').each((i, el) => {
+            const title = $(el).attr('data-title');
+            // Only include mainspace links (no colons like Category:, Help:, etc)
+            if (title && !title.includes(':') && !visibleLinks.includes(title)) {
+                visibleLinks.push(title);
+            }
+        });
+
+        return { 
+            html: cleanedHtml, 
+            links: visibleLinks, 
+            title: res.data.parse.title, // Include the canonical title from the API
+            pageid: res.data.parse.pageid
+        }; 
     } catch (err) {
         console.error(`Error fetching article data for "${title}":`, err.message);
         return null;
@@ -209,10 +268,13 @@ io.on('connection', (socket) => {
         // Store roomId on the socket for easier lookup on disconnect
         socket.data.roomId = roomId;
         if (!rooms[roomId]) {
+            const startArt = await getRandomArticle();
+            const goalArt = await getRandomArticle();
             rooms[roomId] = {
                 players: {},
-                startArticle: await getRandomArticle(),
-                goalArticle: await getRandomArticle(),
+                startArticle: startArt.title,
+                goalArticle: goalArt.title,
+                goalPageId: goalArt.pageid,
                 status: 'waiting',
                 hostId: null // Initialize hostId
             };
@@ -244,6 +306,37 @@ io.on('connection', (socket) => {
         }
     });
 
+    socket.on('playAgain', async (roomId) => {
+        if (rooms[roomId] && (rooms[roomId].status === 'finished' || rooms[roomId].status === 'playing')) {
+            // Only host can restart
+            if (rooms[roomId].hostId !== socket.id) return;
+
+            const startArt = await getRandomArticle();
+            const goalArt = await getRandomArticle();
+            rooms[roomId].status = 'waiting';
+            rooms[roomId].startArticle = startArt.title;
+            rooms[roomId].goalArticle = goalArt.title;
+            rooms[roomId].goalPageId = goalArt.pageid;
+            rooms[roomId].startTime = null;
+            
+            // Reset players
+            Object.keys(rooms[roomId].players).forEach(id => {
+                const p = rooms[roomId].players[id];
+                p.currentArticle = rooms[roomId].startArticle;
+                p.history = [rooms[roomId].startArticle];
+                p.clicks = 0;
+                p.hintCount = 0;
+                p.points = 0;
+                p.finished = false;
+                p.lost = false;
+                delete p.time;
+            });
+            
+            io.to(roomId).emit('roomUpdate', rooms[roomId]);
+            io.to(roomId).emit('chatMessage', { username: 'System', message: 'The game has been reset for a new round!', timestamp: Date.now() });
+        }
+    });
+
     socket.on('navigate', async ({ roomId, targetTitle }) => {
         const room = rooms[roomId];
         const player = room?.players[socket.id];
@@ -266,29 +359,34 @@ io.on('connection', (socket) => {
             return; // Do not update player state or emit roomUpdate for this navigation
         }
 
+        // Use the actual title returned from Wikipedia API (handles redirects)
+        const canonicalTitle = articleData.title.replace(/ /g, '_');
+        const currentPageId = articleData.pageid;
+
         // If article data was successfully fetched, update player's state
-        player.currentArticle = normalizedTarget;
+        player.currentArticle = canonicalTitle;
         player.clicks += 1;
-        player.history.push(normalizedTarget);
+        player.history.push(canonicalTitle);
         player.points -= 10; // Deduct 10 points per click
 
-        // Normalize goal article for consistent comparison (convert spaces to underscores)
-        const normalizedGoal = room.goalArticle.replace(/ /g, '_');
-
-        if (normalizedTarget.toLowerCase() === normalizedGoal.toLowerCase()) {
+        // Compare using pageId for more reliable win detection (handles redirects/normalization)
+        if (currentPageId === room.goalPageId) {
             player.finished = true;
             player.time = (Date.now() - room.startTime) / 1000;
-            player.points += 1000; // Large bonus for reaching the goal
+            player.points += Math.max(0, 1000 - (player.clicks * 20)); // Bonus points based on efficiency
+            io.to(roomId).emit('chatMessage', { username: 'System', message: `${player.username} reached the goal in ${player.clicks} clicks!`, timestamp: Date.now() });
         }
 
         // Logic: If someone has finished, check if other players have already exceeded the winner's clicks
-        const finishers = Object.values(room.players).filter(p => p.finished);
+        // In a "Competitive" race, you can't win if you have more clicks than the current winner
+        const finishers = Object.values(room.players).filter(p => p.finished && !p.lost);
         if (finishers.length > 0) {
             const bestClicks = Math.min(...finishers.map(p => p.clicks));
             Object.values(room.players).forEach(p => {
                 if (!p.finished && p.clicks > bestClicks) {
                     p.finished = true;
                     p.lost = true; // Mark as lost because they can't beat the current leader
+                    io.to(roomId).emit('chatMessage', { username: 'System', message: `${p.username} has been eliminated (too many clicks).`, timestamp: Date.now() });
                 }
             });
         }

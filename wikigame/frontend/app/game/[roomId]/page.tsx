@@ -3,7 +3,7 @@
 import React, { useEffect, useState, use } from 'react';
 import { useSearchParams } from 'next/navigation';
 import io, { Socket } from 'socket.io-client'; // Consolidated socket.io import
-import { ExternalLink, Loader2, Trophy } from 'lucide-react'; // Consolidated lucide-react import
+import { ExternalLink, Loader2, Trophy, Search, Info, X } from 'lucide-react'; // Consolidated lucide-react import
 import { Menu } from 'lucide-react'; // Import Menu icon for mobile sidebar toggle
 
 interface Player {
@@ -44,6 +44,8 @@ interface ArticleSummary {
   };
 }
 
+const serverUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
+
 export default function Game({ params }: { params: { roomId: string } }) {
   // FIX: Unwrap 'params' with React.use() as advised by the error message.
   // This is necessary because in your experimental Next.js version, 'params'
@@ -66,12 +68,12 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const [showMobileSidebar, setShowMobileSidebar] = useState(false); // New: State for mobile sidebar visibility
   const [hints, setHints] = useState<string[]>([]);
   const [loadingHint, setLoadingHint] = useState(false);
+  const [searchQuery, setSearchQuery] = useState(''); // New: Search query for article
+  const [showGoalModal, setShowGoalModal] = useState(false); // New: Goal description modal
 
   const chatDisplayRef = React.useRef<HTMLDivElement>(null); // New: Ref for chat auto-scrolling
   const headerRef = React.useRef<HTMLDivElement>(null); // Ref for header to measure its height
   const [headerHeight, setHeaderHeight] = useState(0); // State to store header height
-
-  const serverUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
   // 1. Initialize socket connection and emit joinRoom
   useEffect(() => {
@@ -117,13 +119,27 @@ export default function Game({ params }: { params: { roomId: string } }) {
     }
 
     const handleRoomUpdate = (data: RoomData) => {
-      setRoomData(data);
-      // Clear error states if room update indicates successful navigation
-      // (i.e., if currentArticle has changed and there was a previous error)
-      const me = socketInstance?.id ? data?.players[socketInstance.id] : undefined;
-      if (me && me.currentArticle !== roomData?.players[socketInstance.id]?.currentArticle) {
+      // Detect game reset (transition from playing/finished back to waiting)
+      if (data.status === 'waiting' && roomData?.status && roomData.status !== 'waiting') {
+        setHtml("");
+        setHints([]);
+        setGoalArticleSummary(null);
         setArticleFetchError(null);
         setFailedNavigationTarget(null);
+        setSearchQuery('');
+      }
+
+      setRoomData(data);
+
+      // Clear error states if current player successfully navigated
+      const myId = socketInstance?.id;
+      if (myId) {
+        const me = data.players[myId];
+        const oldMe = roomData?.players[myId];
+        if (me && oldMe && me.currentArticle !== oldMe.currentArticle) {
+          setArticleFetchError(null);
+          setFailedNavigationTarget(null);
+        }
       }
     };
     
@@ -183,12 +199,14 @@ export default function Game({ params }: { params: { roomId: string } }) {
       }
     };
     fetchContent();
-  }, [roomData?.players?.[socketInstance?.id || '']?.currentArticle, roomData?.status, socketInstance?.id, serverUrl]); // Re-fetch if article or status changes, or socket id becomes available
+  }, [roomData?.players?.[socketInstance?.id || '']?.currentArticle, roomData?.status, socketInstance?.id]); // Re-fetch if article or status changes, or socket id becomes available
 
   // Fetch goal article summary
   useEffect(() => {
     const fetchSummary = async () => {
-      if (roomData?.goalArticle && !goalArticleSummary) { // Fetch only once
+      // Fetch if we have a goal article and don't have a summary for it yet
+      // This is triggered by roomData.goalArticle changing or goalArticleSummary being reset to null
+      if (roomData?.goalArticle && !goalArticleSummary) {
         try {
           const res = await fetch(`${serverUrl}/api/wiki-summary/${encodeURIComponent(roomData.goalArticle)}`);
           if (!res.ok) {
@@ -199,7 +217,6 @@ export default function Game({ params }: { params: { roomId: string } }) {
           setGoalArticleSummary(summary);
         } catch (e: any) {
           console.error("Fetch goal summary error:", e.message);
-          // Optionally, set an error state for the goal summary display
         }
       }
     };
@@ -213,6 +230,14 @@ export default function Game({ params }: { params: { roomId: string } }) {
       chatDisplayRef.current.scrollTop = chatDisplayRef.current.scrollHeight;
     }
   }, [chatMessages]);
+
+  const handleSearch = (e: React.FormEvent) => {
+    e.preventDefault();
+    if (searchQuery) {
+      // @ts-ignore
+      window.find(searchQuery, false, false, true, false, true, false);
+    }
+  };
 
   const handleWikiClick = (e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
@@ -306,7 +331,23 @@ export default function Game({ params }: { params: { roomId: string } }) {
       }
 
       const data = await res.json();
-      setHints(data.hints && data.hints.length > 0 ? data.hints : ["Try looking for broader topics related to the goal."]);
+      const newHints = data.hints && data.hints.length > 0 ? data.hints : ["Try looking for broader topics related to the goal."];
+      setHints(newHints);
+
+      // Scroll to the first hinted link if it exists in the article
+      setTimeout(() => {
+        for (const hint of newHints) {
+          const escapedHint = hint.replace(/'/g, "\\'");
+          const element = document.querySelector(`a[data-title='${escapedHint}']`);
+          if (element) {
+            element.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            element.classList.add('hint-highlight');
+            setTimeout(() => element.classList.remove('hint-highlight'), 5000);
+            break;
+          }
+        }
+      }, 100);
+
     } catch (e: any) {
       console.error("Hint error:", e.message);
       setHints(["Hint currently unavailable"]);
@@ -328,76 +369,124 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const me = roomData.players[socketInstance.id];
 
   return (
-    <div className="flex flex-col h-screen bg-white dark:bg-slate-900 font-sans">
+    <div className="flex flex-col h-screen bg-white dark:bg-slate-900 font-sans relative">
+      {/* Goal Summary Modal */}
+      {showGoalModal && (
+        <div className="fixed inset-0 z-[100] flex items-center justify-center p-4 bg-black/60 backdrop-blur-sm animate-in fade-in duration-200">
+          <div className="bg-white dark:bg-slate-800 rounded-2xl shadow-2xl max-w-lg w-full overflow-hidden border border-slate-200 dark:border-slate-700">
+            <div className="p-6">
+              <div className="flex justify-between items-start mb-4">
+                <h3 className="text-2xl font-bold text-slate-800 dark:text-slate-100">
+                  {roomData.goalArticle.replace(/_/g, ' ')}
+                </h3>
+                <button 
+                  onClick={() => setShowGoalModal(false)}
+                  className="p-1 hover:bg-slate-100 dark:hover:bg-slate-700 rounded-full transition-colors"
+                >
+                  <X size={24} className="text-slate-500" />
+                </button>
+              </div>
+              <div className="prose prose-sm dark:prose-invert max-h-60 overflow-y-auto mb-6">
+                <p className="text-slate-600 dark:text-slate-300 leading-relaxed">
+                  {goalArticleSummary?.extract || "Loading summary..."}
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <button 
+                  onClick={() => setShowGoalModal(false)}
+                  className="flex-1 bg-blue-600 text-white py-3 rounded-xl font-bold hover:bg-blue-700 transition-colors"
+                >
+                  Got it!
+                </button>
+                {goalArticleSummary?.content_urls?.desktop?.page && (
+                  <a 
+                    href={goalArticleSummary.content_urls.desktop.page}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className="px-4 flex items-center justify-center bg-slate-100 dark:bg-slate-700 rounded-xl text-slate-600 dark:text-slate-300 hover:bg-slate-200 dark:hover:bg-slate-600 transition-colors"
+                  >
+                    <ExternalLink size={20} />
+                  </a>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <div ref={headerRef} className="bg-gradient-to-r from-blue-700 to-indigo-700 text-white p-4 flex flex-col md:flex-row justify-between items-center sticky top-0 z-50 shadow-lg dark:from-slate-800 dark:to-slate-900">
-        <div className="text-center md:text-left mb-3 md:mb-0">
-          <p className="text-xs text-blue-200 uppercase font-bold tracking-wider">Goal Article</p>
-          <div className="flex items-center justify-center md:justify-start">
-            <h1 className="text-xl md:text-2xl font-bold text-yellow-300 leading-tight mr-2">
-              {roomData.goalArticle.replace(/_/g, ' ')}
-            </h1>
-            {goalArticleSummary?.content_urls?.desktop?.page && (
-              <a 
-                href={goalArticleSummary.content_urls.desktop.page} 
-                target="_blank" 
-                rel="noopener noreferrer" 
-                className="text-yellow-300 hover:text-yellow-200 transition-colors"
-                aria-label={`Open ${roomData.goalArticle} on Wikipedia`}
-              >
-                <ExternalLink size={16} />
-              </a>
-            )}
+        <div className="text-center md:text-left mb-2 md:mb-0 max-w-full md:max-w-[40%]">
+          <div className="flex items-center gap-2 justify-center md:justify-start">
+            <div className="p-1.5 bg-yellow-400 rounded-lg text-blue-900 shadow-sm hidden md:block">
+              <Trophy size={18} />
+            </div>
+            <div>
+              <p className="text-[10px] md:text-xs text-blue-200 uppercase font-black tracking-widest leading-none mb-1">Target Goal</p>
+              <div className="flex items-center justify-center md:justify-start gap-1.5">
+                <h1 className="text-lg md:text-2xl font-black text-yellow-300 leading-tight truncate max-w-[200px] md:max-w-none">
+                  {roomData.goalArticle.replace(/_/g, ' ')}
+                </h1>
+                <button 
+                  onClick={() => setShowGoalModal(true)}
+                  className="text-yellow-300 hover:text-white transition-colors bg-white/10 p-1 rounded"
+                  title="Goal Info"
+                >
+                  <Info size={16} />
+                </button>
+                {goalArticleSummary?.content_urls?.desktop?.page && (
+                  <a 
+                    href={goalArticleSummary.content_urls.desktop.page} 
+                    target="_blank" 
+                    rel="noopener noreferrer" 
+                    className="text-yellow-300 hover:text-white transition-colors"
+                    aria-label={`Open ${roomData.goalArticle} on Wikipedia`}
+                  >
+                    <ExternalLink size={14} />
+                  </a>
+                )}
+              </div>
+            </div>
           </div>
-          {goalArticleSummary?.extract && (
-            <p className="text-xs text-blue-100 italic max-w-sm mt-1 hidden md:block">
-              {goalArticleSummary.extract.substring(0, 100)}...
-            </p>
-          )}
         </div>
 
-        <div className="text-center mb-3 md:mb-0">
-          <p className="text-xs text-blue-200 uppercase font-bold tracking-wider">Clicks</p>
-          <p className="text-3xl font-mono leading-none text-yellow-300">{me?.clicks || 0}</p>
+        <div className="bg-blue-800/40 dark:bg-slate-700/50 px-6 py-2 rounded-2xl backdrop-blur-sm border border-white/10 flex flex-row md:flex-col items-center gap-3 md:gap-0">
+          <p className="text-[10px] text-blue-200 uppercase font-black tracking-widest mb-0 md:mb-1">Clicks</p>
+          <p className="text-2xl md:text-3xl font-black leading-none text-white drop-shadow-sm">{me?.clicks || 0}</p>
         </div>
 
-        <div className="flex flex-col items-center md:items-end space-y-2">
-            {roomData.status === 'waiting' && socketInstance?.id === roomData.hostId ? (
+        <div className="flex flex-row md:flex-row items-center gap-2 md:gap-4 mt-2 md:mt-0">
+            {roomData.status === 'waiting' && socketInstance?.id === roomData.hostId && (
                 <button 
                     onClick={() => socketInstance?.emit('startGame', roomId)} 
-                    className="bg-green-500 text-white px-6 py-2 rounded-full font-bold shadow-md hover:bg-green-600 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    className="bg-green-500 text-white px-5 py-2 rounded-xl font-black text-sm shadow-lg hover:bg-green-600 transition-all hover:scale-105 active:scale-95 uppercase"
                 >
                     Start Race
                 </button>
-            ) : (
-                <div className="flex flex-col items-center md:items-end">
-                    <p className="text-xs text-blue-200 uppercase font-bold tracking-wider">You are at</p>
-                    <p className="text-base font-medium italic text-blue-100 truncate max-w-[150px]">{me?.currentArticle.replace(/_/g, ' ')}</p>
-                </div>
             )}
-            <button 
-                onClick={handleLeaveRoom}
-                className="bg-red-500 text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-red-600 transition-colors text-sm"
-            >
-                Exit Room
-            </button>
+            
             {roomData.status === 'playing' && !me?.finished && (
               <button 
                 onClick={getWikiHint}
                 disabled={loadingHint}
-                className="bg-amber-500 text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-amber-600 transition-colors text-sm flex items-center gap-1"
+                className="bg-amber-400 text-blue-900 px-5 py-2 rounded-xl font-black text-sm shadow-lg hover:bg-amber-500 transition-all hover:scale-105 active:scale-95 uppercase flex items-center gap-2"
               >
-                {loadingHint ? <Loader2 size={14} className="animate-spin" /> : 'Hint'}
+                {loadingHint ? <Loader2 size={16} className="animate-spin" /> : 'Get Hint'}
               </button>
             )}
-            {/* Mobile-only button to toggle sidebar */}
-            <button
-                className="md:hidden bg-blue-500 text-white px-3 py-1.5 rounded-full font-bold shadow-md hover:bg-blue-600 transition-colors text-xs flex items-center gap-1 mt-2"
-                onClick={() => setShowMobileSidebar(!showMobileSidebar)}
-                aria-expanded={showMobileSidebar}
-                aria-controls="mobile-sidebar"
+
+            <button 
+                onClick={handleLeaveRoom}
+                className="bg-white/10 hover:bg-red-500/80 text-white px-4 py-2 rounded-xl font-bold transition-all text-xs border border-white/20 uppercase"
             >
-                <Menu size={16} /> {showMobileSidebar ? 'Hide' : 'Show'} Info
+                Exit
+            </button>
+
+            <button
+                className="md:hidden bg-blue-500 text-white p-2 rounded-xl shadow-lg border border-white/20"
+                onClick={() => setShowMobileSidebar(!showMobileSidebar)}
+            >
+                <Menu size={20} />
             </button>
         </div>
       </div>
@@ -424,7 +513,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
         <aside 
           id="mobile-sidebar"
           className={`
-            w-64 bg-slate-100 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 p-4 overflow-y-auto shadow-inner
+            w-72 bg-slate-100 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 p-5 overflow-y-auto shadow-2xl md:shadow-inner
             fixed left-0 bottom-0 z-40 transform transition-transform duration-300 ease-in-out md:static
             ${showMobileSidebar ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
           `}
@@ -528,38 +617,71 @@ export default function Game({ params }: { params: { roomId: string } }) {
               <p className="text-sm">Current Goal Article: <span className="font-bold text-slate-600 dark:text-slate-300">{roomData.goalArticle.replace(/_/g, ' ')}</span></p>
             </div>
           ) : me?.finished || roomData.status === 'finished' ? (
-            <div className="flex flex-col items-center justify-center h-full text-center max-w-4xl mx-auto py-10">
-              {me?.lost ? (
-                <div className="mb-6">
-                  <h2 className="text-4xl font-black text-red-500 mb-2">Eliminated!</h2>
-                  <p className="text-xl text-slate-600 dark:text-slate-400">You exceeded the clicks of the winner.</p>
+            <div className="flex flex-col items-center justify-center h-full text-center max-w-4xl mx-auto py-6 md:py-10 px-4">
+              {roomData.status === 'playing' ? (
+                <div className="mb-8 animate-in fade-in zoom-in duration-500 bg-white dark:bg-slate-800 p-8 rounded-3xl shadow-2xl border border-blue-100 dark:border-slate-700">
+                  {me?.lost ? (
+                    <h2 className="text-4xl md:text-5xl font-black text-red-500 mb-2">Race Over for You</h2>
+                  ) : (
+                    <>
+                      <div className="relative mb-6">
+                        <Trophy className="text-yellow-500 mx-auto animate-bounce" size={80} />
+                        <div className="absolute -top-2 left-1/2 -translate-x-1/2 flex gap-1">
+                          {[1,2,3].map(i => <div key={i} className="w-2 h-2 rounded-full bg-yellow-400 animate-ping" style={{animationDelay: `${i*0.2}s`}} />)}
+                        </div>
+                      </div>
+                      <h2 className="text-4xl md:text-5xl font-black text-green-600 dark:text-green-400 mb-2">Victory!</h2>
+                      <p className="text-2xl font-bold text-blue-600 dark:text-blue-400 mb-4">Goal Reached!</p>
+                    </>
+                  )}
+                  <div className="space-y-4">
+                    <p className="text-lg text-slate-600 dark:text-slate-400 font-medium">
+                      {me?.lost ? "You've been eliminated by a faster player." : "Great job! You've reached the target article."}
+                    </p>
+                    <div className="flex items-center justify-center gap-3 py-3 px-6 bg-blue-50 dark:bg-slate-900/50 rounded-2xl border border-blue-100 dark:border-slate-700">
+                      <Loader2 className="animate-spin text-blue-500" size={24} />
+                      <p className="text-base text-slate-500 dark:text-slate-400 font-bold uppercase tracking-tight">Waiting for others to finish...</p>
+                    </div>
+                  </div>
                 </div>
-              ) : me?.finished ? (
-                <>
-                  <Trophy className="text-yellow-500 mx-auto mb-4" size={80} />
-                  <h2 className="text-5xl font-black text-green-600 dark:text-green-400 mb-4">Finished!</h2>
-                </>
               ) : (
-                <h2 className="text-4xl font-black text-blue-600 mb-4">Game Ended</h2>
+                <div className="mb-8 animate-in fade-in zoom-in duration-500">
+                  <h2 className="text-5xl md:text-6xl font-black text-blue-600 dark:text-blue-400 mb-2 uppercase tracking-tighter">Race Over</h2>
+                  <p className="text-lg text-slate-500 dark:text-slate-400">Final Results for Room {roomId}</p>
+                </div>
               )}
 
-              <div className="w-full bg-slate-50 dark:bg-slate-800 rounded-2xl p-6 shadow-xl mb-8 border border-slate-200 dark:border-slate-700">
-                <h3 className="text-xl font-bold mb-4 text-slate-800 dark:text-slate-200">Your Race Path</h3>
-                <div className="flex flex-wrap justify-center gap-2 items-center">
+              <div className="w-full bg-slate-50 dark:bg-slate-800 rounded-3xl p-6 md:p-8 shadow-xl mb-10 border border-slate-200 dark:border-slate-700 overflow-hidden">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-sm font-black text-slate-400 uppercase tracking-[0.2em]">Race Path Analysis</h3>
+                  <div className="px-3 py-1 bg-blue-100 dark:bg-blue-900/30 text-blue-600 dark:text-blue-400 rounded-full text-xs font-bold">
+                    {me?.history.length} Steps
+                  </div>
+                </div>
+                <div className="flex flex-wrap justify-start gap-3 items-center">
                   {me?.history.map((step, i) => (
                     <React.Fragment key={i}>
-                      <span className="px-3 py-1 bg-white dark:bg-slate-700 rounded-md shadow-sm border border-slate-200 dark:border-slate-600 text-sm font-medium">
-                        {step.replace(/_/g, ' ')}
-                      </span>
-                      {i < (me?.history.length - 1) && <span className="text-slate-400">→</span>}
+                      <div className="flex items-center group">
+                        <span className={`px-4 py-2 rounded-xl shadow-sm border transition-all duration-300 text-xs md:text-sm font-bold
+                          ${i === 0 ? 'bg-indigo-600 text-white border-indigo-500' : 
+                            i === (me?.history.length - 1) ? 'bg-green-600 text-white border-green-500' : 
+                            'bg-white dark:bg-slate-700 text-slate-700 dark:text-slate-200 border-slate-200 dark:border-slate-600'}`}>
+                          {step.replace(/_/g, ' ')}
+                        </span>
+                        {i < (me?.history.length - 1) && (
+                          <div className="mx-2 text-slate-300 dark:text-slate-600">
+                            <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3" strokeLinecap="round" strokeLinejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+                          </div>
+                        )}
+                      </div>
                     </React.Fragment>
                   ))}
                 </div>
               </div>
 
               <div className="w-full">
-                <h3 className="text-2xl font-bold mb-4 text-slate-800 dark:text-slate-200">Final Rankings</h3>
-                <div className="grid gap-3">
+                <h3 className="text-2xl font-bold mb-6 text-slate-800 dark:text-slate-200">Leaderboard</h3>
+                <div className="grid gap-4">
                   {Object.values(roomData.players)
                     .sort((a, b) => {
                       if (a.lost && !b.lost) return 1;
@@ -569,30 +691,76 @@ export default function Game({ params }: { params: { roomId: string } }) {
                       return a.clicks - b.clicks || (a.time || 0) - (b.time || 0);
                     })
                     .map((p, idx) => (
-                      <div key={p.id} className={`flex items-center justify-between p-4 rounded-xl border ${idx === 0 ? 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-800' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}`}>
-                        <div className="flex items-center gap-4">
-                          <span className={`text-2xl font-bold ${idx === 0 ? 'text-yellow-600' : 'text-slate-400'}`}>#{idx + 1}</span>
-                          <span className="font-bold text-lg">{p.username}</span>
+                      <div key={p.id} className={`flex items-center justify-between p-4 md:p-5 rounded-2xl border-2 transition-all duration-300 ${idx === 0 ? 'bg-yellow-50 border-yellow-400 scale-105 shadow-yellow-100 dark:bg-yellow-900/20 dark:border-yellow-700' : 'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700 shadow-sm'}`}>
+                        <div className="flex items-center gap-3 md:gap-5">
+                          <div className={`w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center font-black text-lg ${idx === 0 ? 'bg-yellow-400 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-500'}`}>
+                            {idx + 1}
+                          </div>
+                          <div className="text-left">
+                            <span className="font-bold text-lg block leading-tight">{p.username} {p.id === socketInstance?.id && '(You)'}</span>
+                            {p.time && <span className="text-xs text-slate-500 dark:text-slate-400">{Math.floor(p.time)}s total time</span>}
+                          </div>
                         </div>
                         <div className="text-right">
-                          <p className="font-mono font-bold text-xl">{p.clicks} clicks</p>
-                          <p className={`text-sm font-bold ${p.points < 0 ? 'text-red-500' : 'text-green-600'}`}>Score: {p.points}</p>
-                          {p.time && <p className="text-xs text-slate-500">{Math.floor(p.time)} seconds</p>}
+                          <div className="flex items-baseline gap-1 justify-end">
+                            <span className="font-mono font-black text-2xl text-blue-600 dark:text-blue-400">{p.clicks}</span>
+                            <span className="text-xs font-bold text-slate-400 uppercase">Clicks</span>
+                          </div>
+                          <span className={`text-xs font-black px-2 py-0.5 rounded uppercase ${p.lost ? 'bg-red-100 text-red-600' : p.finished ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600'}`}>
+                            {p.lost ? 'Eliminated' : p.finished ? 'Finished' : 'Racing'}
+                          </span>
                         </div>
                       </div>
                     ))}
                 </div>
               </div>
 
-              <button 
-                onClick={() => window.location.href = '/'} 
-                className="mt-12 px-8 py-4 bg-blue-600 text-white rounded-full font-bold text-xl shadow-lg hover:bg-blue-700 transition-all hover:scale-105 active:scale-95"
-              >
-                Back to Lobby
-              </button>
+              <div className="mt-12 flex flex-col md:flex-row gap-4 w-full justify-center">
+                {(roomData.status === 'finished' || me?.finished) && socketInstance?.id === roomData.hostId && (
+                  <button 
+                    onClick={() => {
+                        if (roomData.status !== 'finished' && !confirm("Some players are still racing. Reset game for everyone?")) return;
+                        socketInstance.emit('playAgain', roomId);
+                    }} 
+                    className="px-10 py-4 bg-green-600 text-white rounded-2xl font-bold text-xl shadow-xl hover:bg-green-700 transition-all hover:-translate-y-1 active:translate-y-0"
+                  >
+                    Play Again
+                  </button>
+                )}
+                <button 
+                  onClick={() => window.location.href = '/'} 
+                  className="px-10 py-4 bg-slate-800 dark:bg-slate-700 text-white rounded-2xl font-bold text-xl shadow-xl hover:bg-slate-900 transition-all hover:-translate-y-1 active:translate-y-0"
+                >
+                  Exit Game
+                </button>
+              </div>
             </div>
           ) : (
             <>
+              {/* Search Bar for Article */}
+              {roomData.status === 'playing' && !me?.finished && !loadingArticle && !articleFetchError && (
+                <div className="mb-6 sticky top-0 z-20 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md pb-2">
+                  <form onSubmit={handleSearch} className="flex gap-2 max-w-xl mx-auto">
+                    <div className="relative flex-1">
+                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
+                      <input 
+                        type="text" 
+                        placeholder="Search in article..." 
+                        className="w-full pl-10 pr-4 py-2 bg-slate-100 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm dark:text-white"
+                        value={searchQuery}
+                        onChange={(e) => setSearchQuery(e.target.value)}
+                      />
+                    </div>
+                    <button 
+                      type="submit"
+                      className="px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-sm hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors"
+                    >
+                      Find
+                    </button>
+                  </form>
+                </div>
+              )}
+
               {hints.length > 0 && (
                 <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-3 rounded-lg mb-4 flex items-center justify-between animate-in fade-in slide-in-from-top-2">
                   <div className="flex items-center gap-2">
