@@ -1,10 +1,11 @@
 // frontend\app\game\[roomId]\page.tsx
 "use client";
-import React, { useEffect, useState, use } from 'react';
+import React, { useEffect, useState, use, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
-import io, { Socket } from 'socket.io-client'; // Consolidated socket.io import
-import { ExternalLink, Loader2, Trophy, Search, Info, X } from 'lucide-react'; // Consolidated lucide-react import
-import { Menu } from 'lucide-react'; // Import Menu icon for mobile sidebar toggle
+import io, { Socket } from 'socket.io-client';
+import { ExternalLink, Loader2, Trophy, Search, Info, X, ChevronUp, ChevronDown } from 'lucide-react';
+import { Menu } from 'lucide-react';
+import Mark from 'mark.js';
 
 interface Player {
   id: string;
@@ -44,6 +45,31 @@ interface ArticleSummary {
   };
 }
 
+// Separate component to prevent unnecessary re-renders of the HTML content
+// which would wipe out Mark.js highlights.
+const WikiArticle = React.memo(({ 
+  html, 
+  loading, 
+  error, 
+  onClick 
+}: { 
+  html: string, 
+  loading: boolean, 
+  error: boolean, 
+  onClick: (e: React.MouseEvent) => void 
+}) => {
+  console.log("WikiArticle rendering. html length:", html.length);
+  return (
+    <div 
+      className={`prose transition-all duration-300 ${loading ? 'opacity-50 blur-sm pointer-events-none' : 'opacity-100'} ${error ? 'hidden' : ''}`}
+      onClick={onClick}
+      dangerouslySetInnerHTML={{ __html: html }}
+    />
+  );
+});
+
+WikiArticle.displayName = 'WikiArticle';
+
 const serverUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
 export default function Game({ params }: { params: { roomId: string } }) {
@@ -68,12 +94,25 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const [showMobileSidebar, setShowMobileSidebar] = useState(false); // New: State for mobile sidebar visibility
   const [hints, setHints] = useState<string[]>([]);
   const [loadingHint, setLoadingHint] = useState(false);
-  const [searchQuery, setSearchQuery] = useState(''); // New: Search query for article
-  const [showGoalModal, setShowGoalModal] = useState(false); // New: Goal description modal
+  const [searchQuery, setSearchQuery] = useState('');
+  const [debouncedSearchQuery, setDebouncedSearchQuery] = useState('');
+  const [searchStats, setSearchStats] = useState({ current: 0, total: 0 });
+  const [showGoalModal, setShowGoalModal] = useState(false);
 
-  const chatDisplayRef = React.useRef<HTMLDivElement>(null); // New: Ref for chat auto-scrolling
-  const headerRef = React.useRef<HTMLDivElement>(null); // Ref for header to measure its height
-  const [headerHeight, setHeaderHeight] = useState(0); // State to store header height
+  const chatDisplayRef = useRef<HTMLDivElement>(null);
+  const headerRef = useRef<HTMLDivElement>(null);
+  const articleRef = useRef<HTMLDivElement>(null);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+  const markInstance = useRef<Mark | null>(null);
+  
+  // Refs to keep handleWikiClick stable to prevent WikiArticle from re-rendering
+  const roomDataRef = useRef<RoomData | null>(null);
+  const loadingArticleRef = useRef(false);
+
+  useEffect(() => { roomDataRef.current = roomData; }, [roomData]);
+  useEffect(() => { loadingArticleRef.current = loadingArticle; }, [loadingArticle]);
+
+  const [headerHeight, setHeaderHeight] = useState(0);
 
   // 1. Initialize socket connection and emit joinRoom
   useEffect(() => {
@@ -231,28 +270,124 @@ export default function Game({ params }: { params: { roomId: string } }) {
     }
   }, [chatMessages]);
 
-  const handleSearch = (e: React.FormEvent) => {
-    e.preventDefault();
-    if (searchQuery) {
-      // @ts-ignore
-      window.find(searchQuery, false, false, true, false, true, false);
+  // Debounce search query
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      setDebouncedSearchQuery(searchQuery);
+    }, 300);
+    return () => clearTimeout(timer);
+  }, [searchQuery]);
+
+  const scrollToMatch = useCallback((index: number) => {
+    const matches = articleRef.current?.querySelectorAll('.search-highlight');
+    console.log(`Scrolling to match ${index + 1}/${matches?.length || 0}`);
+    
+    if (matches && matches[index]) {
+      matches.forEach(m => m.classList.remove('current-search-highlight'));
+      matches[index].classList.add('current-search-highlight');
+      
+      // Use scrollIntoView with better block alignment
+      matches[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
+    } else if (matches && matches.length === 0 && index >= 0) {
+      console.warn("Search highlights missing from DOM. React likely re-rendered.");
     }
+  }, []);
+
+  // Handle Search Logic with Mark.js
+  const performSearch = useCallback(() => {
+    if (!articleRef.current) return;
+    
+    console.log("performSearch called. Article text length:", articleRef.current?.textContent?.length);
+
+    if (!markInstance.current) {
+      markInstance.current = new Mark(articleRef.current);
+    }
+
+    markInstance.current.unmark({
+      done: () => {
+        if (!debouncedSearchQuery.trim()) {
+          setSearchStats({ current: 0, total: 0 });
+          return;
+        }
+
+        console.log("Before mark. Existing highlights:", articleRef.current?.querySelectorAll(".search-highlight").length);
+
+        markInstance.current?.mark(debouncedSearchQuery, {
+          className: 'search-highlight',
+          acrossElements: true,
+          separateWordSearch: false,
+          done: (totalMatches) => {
+            console.log("After mark. totalMatches:", totalMatches, "DOM highlights:", articleRef.current?.querySelectorAll(".search-highlight").length);
+            setSearchStats({ 
+              total: totalMatches, 
+              current: totalMatches > 0 ? 1 : 0 
+            });
+            if (totalMatches > 0) {
+              // Delay slightly to ensure React has finished any re-renders
+              // triggered by setSearchStats before we attempt to scroll
+              setTimeout(() => scrollToMatch(0), 50);
+            }
+          }
+        });
+      }
+    });
+  }, [debouncedSearchQuery, scrollToMatch]);
+
+  useEffect(() => {
+    performSearch();
+  }, [performSearch, html]); // Re-run search when query or content changes
+
+  const findNext = () => {
+    if (searchStats.total === 0) return;
+    const nextIndex = (searchStats.current % searchStats.total) + 1;
+    setSearchStats(prev => ({ ...prev, current: nextIndex }));
+    scrollToMatch(nextIndex - 1);
   };
 
-  const handleWikiClick = (e: React.MouseEvent) => {
+  const findPrevious = () => {
+    if (searchStats.total === 0) return;
+    const prevIndex = searchStats.current === 1 ? searchStats.total : searchStats.current - 1;
+    setSearchStats(prev => ({ ...prev, current: prevIndex }));
+    scrollToMatch(prevIndex - 1);
+  };
+
+  // Keyboard shortcuts
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        searchInputRef.current?.focus();
+      }
+      if (e.key === 'Escape') {
+        setSearchQuery('');
+        searchInputRef.current?.blur();
+      }
+      if (e.target === searchInputRef.current && e.key === 'Enter') {
+        e.preventDefault();
+        if (e.shiftKey) findPrevious();
+        else findNext();
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [searchStats]);
+
+  const handleWikiClick = useCallback((e: React.MouseEvent) => {
     const target = e.target as HTMLElement;
     const anchor = target.closest('a');
     
-    // Only proceed if it's a valid link and game is in a playable state
-    // Use optional chaining for socketInstance and provide a fallback empty string for the key access
-    const myPlayer = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined;
+    const currentRoomData = roomDataRef.current;
+    const isLoading = loadingArticleRef.current;
 
-    if (anchor && roomData?.status === 'playing' && myPlayer && !myPlayer.finished) {
+    // Only proceed if it's a valid link and game is in a playable state
+    const myPlayer = socketInstance?.id ? currentRoomData?.players[socketInstance.id] : undefined;
+
+    if (anchor && currentRoomData?.status === 'playing' && myPlayer && !myPlayer.finished) {
       const dataTitle = anchor.getAttribute('data-title');
 
       if (dataTitle) { 
         e.preventDefault(); 
-        if (!loadingArticle && socketInstance) { 
+        if (!isLoading && socketInstance) { 
           setArticleFetchError(null);
           setFailedNavigationTarget(null);
           setLoadingArticle(true); // Set loading ON immediately on click
@@ -260,7 +395,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
         }
       }
     }
-  };
+  }, [socketInstance, roomId]);
 
   const handleRetry = () => {
     if (socketInstance && failedNavigationTarget) {
@@ -739,25 +874,56 @@ export default function Game({ params }: { params: { roomId: string } }) {
             <>
               {/* Search Bar for Article */}
               {roomData.status === 'playing' && !me?.finished && !loadingArticle && !articleFetchError && (
-                <div className="mb-6 sticky top-0 z-20 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md pb-2">
-                  <form onSubmit={handleSearch} className="flex gap-2 max-w-xl mx-auto">
-                    <div className="relative flex-1">
+                <div className="mb-6 sticky top-0 z-20 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md py-2 border-b border-slate-100 dark:border-slate-800">
+                  <div className="flex flex-col md:flex-row items-center gap-3 max-w-2xl mx-auto px-2">
+                    <div className="relative flex-1 w-full">
                       <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
                       <input 
+                        ref={searchInputRef}
                         type="text" 
-                        placeholder="Search in article..." 
-                        className="w-full pl-10 pr-4 py-2 bg-slate-100 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm dark:text-white"
+                        placeholder="Search article (Ctrl+F)" 
+                        className="w-full pl-10 pr-24 py-2.5 bg-slate-100 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm dark:text-white transition-all shadow-sm"
                         value={searchQuery}
                         onChange={(e) => setSearchQuery(e.target.value)}
+                        aria-label="Search article content"
                       />
+                      {searchQuery && (
+                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
+                          <span className="text-[10px] font-bold text-slate-400 bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded" aria-live="polite">
+                            {searchStats.total > 0 ? `${searchStats.current}/${searchStats.total}` : '0/0'}
+                          </span>
+                          <button type="button" onClick={() => setSearchQuery('')} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
+                            <X size={14} />
+                          </button>
+                        </div>
+                      )}
                     </div>
-                    <button 
-                      type="submit"
-                      className="px-4 py-2 bg-slate-200 dark:bg-slate-700 text-slate-700 dark:text-slate-200 rounded-xl font-bold text-sm hover:bg-slate-300 dark:hover:bg-slate-600 transition-colors"
-                    >
-                      Find
-                    </button>
-                  </form>
+                    
+                    <div className="flex items-center gap-1">
+                      <button 
+                        type="button"
+                        onClick={findPrevious}
+                        disabled={searchStats.total === 0}
+                        className="p-2.5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-30 border border-slate-200 dark:border-slate-700 transition-all shadow-sm"
+                        title="Previous (Shift+Enter)"
+                      >
+                        <ChevronUp size={18} />
+                      </button>
+                      <button 
+                        type="button"
+                        onClick={findNext}
+                        disabled={searchStats.total === 0}
+                        className="p-2.5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-30 border border-slate-200 dark:border-slate-700 transition-all shadow-sm"
+                        title="Next (Enter)"
+                      >
+                        <ChevronDown size={18} />
+                      </button>
+                    </div>
+
+                    {searchQuery && debouncedSearchQuery && searchStats.total === 0 && (
+                      <p className="text-xs text-red-500 font-medium animate-in fade-in slide-in-from-left-2">No results found</p>
+                    )}
+                  </div>
                 </div>
               )}
 
@@ -802,11 +968,12 @@ export default function Game({ params }: { params: { roomId: string } }) {
                 </div>
               )}
               {/* Wrap the prose content in a div to handle table overflow */}
-              <div className="article-content-wrapper">
-                <div 
-                  className={`prose transition-all duration-300 ${loadingArticle ? 'opacity-50 blur-sm pointer-events-none' : 'opacity-100'} ${articleFetchError ? 'hidden' : ''}`}
-                  onClick={handleWikiClick}
-                  dangerouslySetInnerHTML={{ __html: html }}
+              <div className="article-content-wrapper" ref={articleRef}>
+                <WikiArticle 
+                  html={html} 
+                  loading={loadingArticle} 
+                  error={!!articleFetchError} 
+                  onClick={handleWikiClick} 
                 />
                 {/* When there's an error, display current article name for context */}
                 {articleFetchError && (
