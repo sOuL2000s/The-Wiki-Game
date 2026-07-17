@@ -12,7 +12,10 @@ interface Player {
   currentArticle: string;
   history: string[];
   clicks: number;
+  hintCount: number;
+  points: number;
   finished: boolean;
+  lost?: boolean;
   time?: number;
 }
 
@@ -61,6 +64,8 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
   const [showMobileSidebar, setShowMobileSidebar] = useState(false); // New: State for mobile sidebar visibility
+  const [hints, setHints] = useState<string[]>([]);
+  const [loadingHint, setLoadingHint] = useState(false);
 
   const chatDisplayRef = React.useRef<HTMLDivElement>(null); // New: Ref for chat auto-scrolling
   const headerRef = React.useRef<HTMLDivElement>(null); // Ref for header to measure its height
@@ -285,6 +290,31 @@ export default function Game({ params }: { params: { roomId: string } }) {
     }
   };
 
+  const getWikiHint = async () => {
+    if (!me || me.finished || !roomData || !socketInstance) return;
+    
+    // Notify server to deduct points and increment hint count
+    socketInstance.emit('requestHint', { roomId });
+
+    setLoadingHint(true);
+    try {
+      const res = await fetch(`${serverUrl}/api/wiki-hint/${encodeURIComponent(me.currentArticle)}/${encodeURIComponent(roomData.goalArticle)}`);
+      
+      const contentType = res.headers.get("content-type");
+      if (!res.ok || !contentType || !contentType.includes("application/json")) {
+        throw new Error(`Server error: ${res.status}`);
+      }
+
+      const data = await res.json();
+      setHints(data.hints && data.hints.length > 0 ? data.hints : ["Try looking for broader topics related to the goal."]);
+    } catch (e: any) {
+      console.error("Hint error:", e.message);
+      setHints(["Hint currently unavailable"]);
+    } finally {
+      setLoadingHint(false);
+    }
+  };
+
 
   if (!roomData || !socketInstance) return ( // Add check for socketInstance here
     <div className="flex flex-col items-center justify-center h-screen bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl">
@@ -351,6 +381,15 @@ export default function Game({ params }: { params: { roomId: string } }) {
             >
                 Exit Room
             </button>
+            {roomData.status === 'playing' && !me?.finished && (
+              <button 
+                onClick={getWikiHint}
+                disabled={loadingHint}
+                className="bg-amber-500 text-white px-4 py-2 rounded-full font-bold shadow-md hover:bg-amber-600 transition-colors text-sm flex items-center gap-1"
+              >
+                {loadingHint ? <Loader2 size={14} className="animate-spin" /> : 'Hint'}
+              </button>
+            )}
             {/* Mobile-only button to toggle sidebar */}
             <button
                 className="md:hidden bg-blue-500 text-white px-3 py-1.5 rounded-full font-bold shadow-md hover:bg-blue-600 transition-colors text-xs flex items-center gap-1 mt-2"
@@ -362,6 +401,23 @@ export default function Game({ params }: { params: { roomId: string } }) {
             </button>
         </div>
       </div>
+
+      {/* Real-time Path Breadcrumbs */}
+      {roomData.status === 'playing' && !me?.finished && (
+        <div className="bg-slate-50 dark:bg-slate-800 border-b border-slate-200 dark:border-slate-700 p-2 overflow-x-auto whitespace-nowrap shadow-inner">
+          <div className="flex items-center gap-2 px-4 text-[10px] md:text-xs">
+            <span className="font-bold text-slate-500 dark:text-slate-400 uppercase">Your Path:</span>
+            {me?.history.map((step, i) => (
+              <React.Fragment key={i}>
+                <span className="px-2 py-0.5 bg-white dark:bg-slate-700 rounded border border-slate-200 dark:border-slate-600 font-medium text-slate-700 dark:text-slate-200">
+                  {step.replace(/_/g, ' ')}
+                </span>
+                {i < (me?.history.length - 1) && <span className="text-slate-400">→</span>}
+              </React.Fragment>
+            ))}
+          </div>
+        </div>
+      )}
 
       <div className="flex flex-1 overflow-hidden">
         {/* Leaderboard & Chat Sidebar */}
@@ -393,16 +449,32 @@ export default function Game({ params }: { params: { roomId: string } }) {
                     <span className={`font-semibold text-sm truncate mr-2 ${p.id === socketInstance?.id ? 'text-blue-700 dark:text-blue-300' : 'text-slate-800 dark:text-slate-100'}`}>
                       {p.username} {p.id === socketInstance?.id && '(You)'} {p.id === roomData.hostId && '(Host)'}
                     </span>
-                    <span className="text-xs font-mono bg-slate-200 dark:bg-slate-600 text-slate-600 dark:text-slate-200 px-2 py-0.5 rounded-full">
-                      {p.clicks} clicks
-                    </span>
+                    <div className="flex flex-col items-end">
+                      <span className="text-xs font-mono bg-slate-200 dark:bg-slate-600 text-slate-600 dark:text-slate-200 px-2 py-0.5 rounded-full">
+                        {p.clicks} clicks
+                      </span>
+                      <span className={`text-[10px] font-bold mt-1 ${p.points < 0 ? 'text-red-500' : 'text-green-500'}`}>
+                        Score: {p.points}
+                      </span>
+                    </div>
                   </div>
-                  <div className="text-[11px] text-slate-500 dark:text-slate-400 italic truncate">{p.currentArticle.replace(/_/g, ' ')}</div>
+                  <div className="text-[11px] text-slate-500 dark:text-slate-400 italic truncate mb-1">
+                    {p.currentArticle.replace(/_/g, ' ')}
+                  </div>
+                  <div className="text-[10px] text-slate-400">Hints: {p.hintCount || 0}</div>
                   {p.finished && (
-                    <div className="flex items-center text-green-600 dark:text-green-400 font-bold text-xs mt-2">
-                      <Trophy className="mr-1" size={12} /> WINNER! ({Math.floor(p.time || 0)}s)
+                    <div className={`flex items-center font-bold text-xs mt-2 ${p.lost ? 'text-red-500' : 'text-green-600 dark:text-green-400'}`}>
+                      {p.lost ? 'ELIMINATED' : <><Trophy className="mr-1" size={12} /> FINISHED! ({Math.floor(p.time || 0)}s)</>}
                     </div>
                   )}
+                  {/* Path Preview */}
+                  <div className="mt-2 flex flex-wrap gap-1">
+                    {p.history.slice(-3).map((h, i) => (
+                      <span key={i} className="text-[9px] bg-slate-200 dark:bg-slate-600 px-1 rounded opacity-70">
+                        {h.length > 10 ? h.substring(0, 10) + '...' : h}
+                      </span>
+                    ))}
+                  </div>
                 </div>
               ))}
           </div>
@@ -455,22 +527,85 @@ export default function Game({ params }: { params: { roomId: string } }) {
               <p className="text-sm mt-2">Current Start Article: <span className="font-bold text-slate-600 dark:text-slate-300">{roomData.startArticle.replace(/_/g, ' ')}</span></p>
               <p className="text-sm">Current Goal Article: <span className="font-bold text-slate-600 dark:text-slate-300">{roomData.goalArticle.replace(/_/g, ' ')}</span></p>
             </div>
-          ) : me?.finished ? (
-            <div className="flex flex-col items-center justify-center h-full text-center">
-              <Trophy className="text-green-500 mb-4" size={96} />
-              <h2 className="text-6xl font-black text-green-600 dark:text-green-400 mb-4 animate-bounce">GG!</h2>
-              <p className="text-3xl text-slate-700 dark:text-slate-200">
-                You reached the goal in <span className="font-bold text-green-700 dark:text-green-300">{me.clicks}</span> clicks and <span className="font-bold text-green-700 dark:text-green-300">{Math.floor(me.time || 0)}</span> seconds!
-              </p>
+          ) : me?.finished || roomData.status === 'finished' ? (
+            <div className="flex flex-col items-center justify-center h-full text-center max-w-4xl mx-auto py-10">
+              {me?.lost ? (
+                <div className="mb-6">
+                  <h2 className="text-4xl font-black text-red-500 mb-2">Eliminated!</h2>
+                  <p className="text-xl text-slate-600 dark:text-slate-400">You exceeded the clicks of the winner.</p>
+                </div>
+              ) : me?.finished ? (
+                <>
+                  <Trophy className="text-yellow-500 mx-auto mb-4" size={80} />
+                  <h2 className="text-5xl font-black text-green-600 dark:text-green-400 mb-4">Finished!</h2>
+                </>
+              ) : (
+                <h2 className="text-4xl font-black text-blue-600 mb-4">Game Ended</h2>
+              )}
+
+              <div className="w-full bg-slate-50 dark:bg-slate-800 rounded-2xl p-6 shadow-xl mb-8 border border-slate-200 dark:border-slate-700">
+                <h3 className="text-xl font-bold mb-4 text-slate-800 dark:text-slate-200">Your Race Path</h3>
+                <div className="flex flex-wrap justify-center gap-2 items-center">
+                  {me?.history.map((step, i) => (
+                    <React.Fragment key={i}>
+                      <span className="px-3 py-1 bg-white dark:bg-slate-700 rounded-md shadow-sm border border-slate-200 dark:border-slate-600 text-sm font-medium">
+                        {step.replace(/_/g, ' ')}
+                      </span>
+                      {i < (me?.history.length - 1) && <span className="text-slate-400">→</span>}
+                    </React.Fragment>
+                  ))}
+                </div>
+              </div>
+
+              <div className="w-full">
+                <h3 className="text-2xl font-bold mb-4 text-slate-800 dark:text-slate-200">Final Rankings</h3>
+                <div className="grid gap-3">
+                  {Object.values(roomData.players)
+                    .sort((a, b) => {
+                      if (a.lost && !b.lost) return 1;
+                      if (!a.lost && b.lost) return -1;
+                      if (a.finished && !b.finished) return -1;
+                      if (!a.finished && b.finished) return 1;
+                      return a.clicks - b.clicks || (a.time || 0) - (b.time || 0);
+                    })
+                    .map((p, idx) => (
+                      <div key={p.id} className={`flex items-center justify-between p-4 rounded-xl border ${idx === 0 ? 'bg-yellow-50 border-yellow-200 dark:bg-yellow-900/20 dark:border-yellow-800' : 'bg-white dark:bg-slate-800 border-slate-200 dark:border-slate-700'}`}>
+                        <div className="flex items-center gap-4">
+                          <span className={`text-2xl font-bold ${idx === 0 ? 'text-yellow-600' : 'text-slate-400'}`}>#{idx + 1}</span>
+                          <span className="font-bold text-lg">{p.username}</span>
+                        </div>
+                        <div className="text-right">
+                          <p className="font-mono font-bold text-xl">{p.clicks} clicks</p>
+                          <p className={`text-sm font-bold ${p.points < 0 ? 'text-red-500' : 'text-green-600'}`}>Score: {p.points}</p>
+                          {p.time && <p className="text-xs text-slate-500">{Math.floor(p.time)} seconds</p>}
+                        </div>
+                      </div>
+                    ))}
+                </div>
+              </div>
+
               <button 
                 onClick={() => window.location.href = '/'} 
-                className="mt-10 px-6 py-3 bg-blue-600 text-white rounded-full font-semibold text-lg shadow-md hover:bg-blue-700 transition-colors"
+                className="mt-12 px-8 py-4 bg-blue-600 text-white rounded-full font-bold text-xl shadow-lg hover:bg-blue-700 transition-all hover:scale-105 active:scale-95"
               >
-                Play Again
+                Back to Lobby
               </button>
             </div>
           ) : (
             <>
+              {hints.length > 0 && (
+                <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-3 rounded-lg mb-4 flex items-center justify-between animate-in fade-in slide-in-from-top-2">
+                  <div className="flex items-center gap-2">
+                    <span className="text-amber-600 font-bold text-sm uppercase">Hints:</span>
+                    <div className="flex gap-2">
+                      {hints.map((h, i) => (
+                        <span key={i} className="bg-white dark:bg-slate-800 px-2 py-0.5 rounded border border-amber-200 text-xs font-semibold">{h}</span>
+                      ))}
+                    </div>
+                  </div>
+                  <button onClick={() => setHints([])} className="text-amber-500 hover:text-amber-700 text-xs font-bold">Close</button>
+                </div>
+              )}
               {loadingArticle && (
                 <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-70 dark:bg-slate-900 dark:bg-opacity-70 z-10">
                   <Loader2 className="animate-spin text-blue-500 dark:text-blue-400" size={48} />

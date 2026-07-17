@@ -111,6 +111,51 @@ function cleanWikipediaHtml(htmlContent) {
     return $.html();
 }
 
+// NEW FUNCTION: Get hints by finding common links
+async function getHint(currentTitle, targetTitle) {
+    try {
+        const cur = currentTitle.replace(/_/g, ' ');
+        const tar = targetTitle.replace(/_/g, ' ');
+
+        // 1. Get links on current page and links to target
+        // 2. Also get categories of target to provide "thematic" hints
+        const [currentRes, targetRes, targetCats] = await Promise.all([
+            axios.get(`https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(cur)}&prop=links&format=json`, { headers: wikiHeaders }),
+            axios.get(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(tar)}&prop=linkshere&lhlimit=500&format=json`, { headers: wikiHeaders }),
+            axios.get(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(tar)}&prop=categories&cllimit=50&format=json`, { headers: wikiHeaders })
+        ]);
+
+        if (currentRes.data.error || targetRes.data.error) return [];
+
+        const currentLinks = currentRes.data.parse?.links?.map(l => l['*']) || [];
+        const pages = targetRes.data.query?.pages || {};
+        const pageId = Object.keys(pages)[0];
+        const linksToTarget = pages[pageId]?.linkshere?.map(l => l.title) || [];
+
+        // Direct 1-click hints
+        const directHints = currentLinks.filter(link => linksToTarget.includes(link));
+        if (directHints.length > 0) return directHints.slice(0, 3);
+
+        // If no direct link, find links that share words with target title or its categories
+        const tarWords = tar.toLowerCase().split(' ').filter(w => w.length > 3);
+        const catPages = targetCats.data.query?.pages || {};
+        const catPageId = Object.keys(catPages)[0];
+        const categories = catPages[catPageId]?.categories?.map(c => c.title.replace('Category:', '').toLowerCase()) || [];
+        
+        const semanticHints = currentLinks.filter(link => {
+            const l = link.toLowerCase();
+            return tarWords.some(word => l.includes(word)) || categories.some(cat => l.includes(cat));
+        });
+
+        if (semanticHints.length > 0) return semanticHints.slice(0, 3);
+        
+        // Fallback: Significant links
+        return currentLinks.filter(l => !/\d{4}/.test(l) && l.length > 5).slice(0, 2);
+    } catch (err) {
+        return [];
+    }
+}
+
 async function getArticleData(title) {
     try {
         // Request mobile format for slightly cleaner HTML, but we'll clean it further
@@ -184,6 +229,8 @@ io.on('connection', (socket) => {
             currentArticle: rooms[roomId].startArticle,
             history: [rooms[roomId].startArticle],
             clicks: 0,
+            hintCount: 0,
+            points: 0,
             finished: false
         };
         io.to(roomId).emit('roomUpdate', rooms[roomId]);
@@ -223,13 +270,33 @@ io.on('connection', (socket) => {
         player.currentArticle = normalizedTarget;
         player.clicks += 1;
         player.history.push(normalizedTarget);
+        player.points -= 10; // Deduct 10 points per click
 
-        // Normalize goal article for consistent comparison
-        const normalizedGoal = room.goalArticle.replace(/_/g, '_');
+        // Normalize goal article for consistent comparison (convert spaces to underscores)
+        const normalizedGoal = room.goalArticle.replace(/ /g, '_');
 
         if (normalizedTarget.toLowerCase() === normalizedGoal.toLowerCase()) {
             player.finished = true;
             player.time = (Date.now() - room.startTime) / 1000;
+            player.points += 1000; // Large bonus for reaching the goal
+        }
+
+        // Logic: If someone has finished, check if other players have already exceeded the winner's clicks
+        const finishers = Object.values(room.players).filter(p => p.finished);
+        if (finishers.length > 0) {
+            const bestClicks = Math.min(...finishers.map(p => p.clicks));
+            Object.values(room.players).forEach(p => {
+                if (!p.finished && p.clicks > bestClicks) {
+                    p.finished = true;
+                    p.lost = true; // Mark as lost because they can't beat the current leader
+                }
+            });
+        }
+
+        // Check if everyone is finished
+        const allFinished = Object.values(room.players).every(p => p.finished);
+        if (allFinished) {
+            room.status = 'finished';
         }
 
         // Emit room update to all players
@@ -248,6 +315,16 @@ io.on('connection', (socket) => {
             handlePlayerLeave(socket, disconnectedFromRoomId); // Pass the socket object
         } else {
             console.log(`Socket ${socket.id} disconnected, not found in any active room (socket.data.roomId was not set).`);
+        }
+    });
+
+    socket.on('requestHint', ({ roomId }) => {
+        const room = rooms[roomId];
+        const player = room?.players[socket.id];
+        if (room && player && !player.finished && room.status === 'playing') {
+            player.hintCount += 1;
+            player.points -= 50; // Deduct 50 points per hint
+            io.to(roomId).emit('roomUpdate', room);
         }
     });
 
@@ -303,6 +380,11 @@ app.get('/api/wiki-summary/:title', async (req, res) => {
     const data = await getArticleSummary(req.params.title);
     if (data) res.json(data);
     else res.status(404).json({ error: "Summary not found" });
+});
+
+app.get('/api/wiki-hint/:current/:target', async (req, res) => {
+    const hints = await getHint(req.params.current, req.params.target);
+    res.json({ hints });
 });
 
 const PORT = process.env.PORT || 3001; // Use Render's assigned port, or 3001 locally
