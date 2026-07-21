@@ -1,70 +1,182 @@
-/* frontend\app\globals.css */
+/* frontend/app/globals.css */
 @import "tailwindcss";
 
 :root {
   --background: #ffffff;
   --foreground: #171717;
-  --primary-color: #3b82f6; /* Blue-600 */
-  --accent-color: #fcd34d; /* Yellow-400 */
-  --border-color: #e2e8f0; /* Slate-200 */
-  --light-text: #64748b; /* Slate-500 */
+  --primary-color: #3b82f6;
+  --primary-dark: #2563eb;
+  --accent-color: #fcd34d;
+  --accent-glow: #fbbf24;
+  --border-color: #e2e8f0;
+  --light-text: #64748b;
+  --gradient-start: #1e1b4b;
+  --gradient-end: #312e81;
+  --card-shadow: 0 20px 60px -15px rgba(0, 0, 0, 0.15);
+  --glow-color: rgba(59, 130, 246, 0.3);
 }
 
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);
-  --color-primary: var(--primary-color); /* <--- ADD THIS LINE */
+  --color-primary: var(--primary-color);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
 }
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-    --primary-color: #60a5fa; /* Blue-400 */
-    --accent-color: #fde047; /* Yellow-300 */
-    --border-color: #334155; /* Slate-700 */
-    --light-text: #94a3b8; /* Slate-400 */
+    --background: #0f0f1a;
+    --foreground: #f1f5f9;
+    --primary-color: #60a5fa;
+    --primary-dark: #3b82f6;
+    --accent-color: #fde047;
+    --border-color: #334155;
+    --light-text: #94a3b8;
+    --gradient-start: #0a0a1a;
+    --gradient-end: #1a1a3a;
+    --card-shadow: 0 20px 60px -15px rgba(0, 0, 0, 0.4);
+    --glow-color: rgba(96, 165, 250, 0.2);
   }
 }
 
-/* Body and layout styles */
 html, body {
   overflow-x: hidden;
+  background: var(--background);
+  color: var(--foreground);
 }
 
 body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: var(--font-geist-sans); /* Apply Geist Sans font */
+  font-family: var(--font-geist-sans);
   line-height: 1.6;
   -webkit-font-smoothing: antialiased;
   -moz-osx-font-smoothing: grayscale;
-  overflow: hidden; /* Prevent body scroll, let containers handle it */
+  overflow: hidden;
+  background: linear-gradient(135deg, var(--gradient-start), var(--gradient-end));
+  min-height: 100vh;
 }
 
-/* Base Prose Styles for better readability and a clean look */
+/* Enhanced Glassmorphism Effects */
+.glass {
+  background: rgba(255, 255, 255, 0.08);
+  backdrop-filter: blur(20px);
+  -webkit-backdrop-filter: blur(20px);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  box-shadow: var(--card-shadow);
+}
+
+.dark .glass {
+  background: rgba(15, 15, 30, 0.7);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+}
+
+/* Animated Gradient Background for Header */
+.animated-gradient {
+  background: linear-gradient(
+    135deg,
+    var(--gradient-start),
+    var(--gradient-end),
+    var(--primary-color)
+  );
+  background-size: 300% 300%;
+  animation: gradientShift 8s ease-in-out infinite;
+}
+
+@keyframes gradientShift {
+  0% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+  100% { background-position: 0% 50%; }
+}
+
+/* Glowing effects */
+.glow {
+  position: relative;
+}
+
+.glow::before {
+  content: '';
+  position: absolute;
+  inset: -2px;
+  border-radius: inherit;
+  padding: 2px;
+  background: linear-gradient(135deg, var(--primary-color), var(--accent-color), var(--primary-color));
+  background-size: 300% 300%;
+  animation: borderGlow 4s ease-in-out infinite;
+  -webkit-mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  mask: linear-gradient(#fff 0 0) content-box, linear-gradient(#fff 0 0);
+  -webkit-mask-composite: xor;
+  mask-composite: exclude;
+  pointer-events: none;
+}
+
+@keyframes borderGlow {
+  0%, 100% { background-position: 0% 50%; }
+  50% { background-position: 100% 50%; }
+}
+
+/* Enhanced Prose Styling */
 .prose {
+  font-family: 'Inter', system-ui, -apple-system, sans-serif;
+  font-size: 1.1rem;
+  padding: 2rem 2.5rem;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 1.5rem;
+  backdrop-filter: blur(10px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
   @apply text-foreground; /* Use foreground color */
   max-width: 800px; /* Max width for readability, can adjust */
   margin-left: auto;
   margin-right: auto;
-  padding: 1rem 1.5rem; /* Consistent padding */
 }
 
 /* Modern Article Styling */
-.prose {
+/* .prose { // This block is now merged into the main .prose above
   font-family: 'Inter', system-ui, -apple-system, sans-serif;
   font-size: 1.1rem;
-}
+} */
 
 .prose p {
   @apply mb-6 leading-relaxed;
 }
 
-.prose h1, .prose h2, .prose h3 {
-  @apply tracking-tight mb-4 mt-8;
+/* Links */
+.prose a {
+  @apply text-primary underline hover:no-underline;
+  word-break: break-word; /* Prevent long links from overflowing */
+  position: relative;
+  transition: all 0.3s ease;
+  text-decoration: none;
+  border-bottom: 2px solid transparent;
+}
+/* Style for links with data-title attribute (internal links for our game) */
+.prose a[data-title] {
+  @apply text-blue-600 dark:text-blue-400 font-medium;
+  /* Add specific styling to make them stand out as navigable within the game */
+}
+
+.prose a[data-title]:hover {
+  color: var(--primary-color);
+  border-bottom-color: var(--primary-color);
+  transform: translateY(-1px);
+}
+
+.prose a[data-title]::after {
+  content: '→';
+  margin-left: 4px;
+  opacity: 0;
+  transition: all 0.3s ease;
+  display: inline-block;
+}
+
+.prose a[data-title]:hover::after {
+  opacity: 1;
+  transform: translateX(4px);
+}
+
+/* Style for external links */
+.prose a[target="_blank"] {
+  @apply text-slate-500 dark:text-slate-400 text-sm;
+  /* You can add an external link icon here if you want, e.g., using a background image */
 }
 
 /* Custom Scrollbar for better appearance */
@@ -73,33 +185,15 @@ body {
   height: 8px;
 }
 ::-webkit-scrollbar-track {
-  background: transparent;
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb {
-  background: #cbd5e1;
+  background: linear-gradient(135deg, var(--primary-color), var(--accent-color));
   border-radius: 10px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #94a3b8;
-}
-.dark ::-webkit-scrollbar-thumb {
-  background: #334155;
-}
-
-/* Links */
-.prose a {
-  @apply text-primary underline hover:no-underline; /* <--- CHANGE THIS LINE */
-  word-break: break-word; /* Prevent long links from overflowing */
-}
-/* Style for links with data-title attribute (internal links for our game) */
-.prose a[data-title] {
-  @apply text-blue-700 dark:text-blue-300 font-medium;
-  /* Add specific styling to make them stand out as navigable within the game */
-}
-/* Style for external links */
-.prose a[target="_blank"] {
-  @apply text-slate-500 dark:text-slate-400 text-sm;
-  /* You can add an external link icon here if you want, e.g., using a background image */
+  background: var(--primary-dark);
 }
 
 
@@ -125,9 +219,11 @@ body {
 }
 
 /* Paragraphs */
+/* This is already handled by .prose p above
 .prose p {
   @apply mb-4 leading-relaxed;
 }
+*/
 
 /* Lists */
 .prose ul {
@@ -294,4 +390,46 @@ body {
 .dark .current-search-highlight {
   background-color: #e65100 !important;
   box-shadow: 0 0 10px rgba(230, 81, 0, 0.4);
+}
+
+/* Pulse Animation for Active Elements */
+.pulse-ring {
+  animation: pulseRing 2s ease-in-out infinite;
+}
+
+@keyframes pulseRing {
+  0% { box-shadow: 0 0 0 0 var(--glow-color); }
+  70% { box-shadow: 0 0 0 15px transparent; }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+
+/* Floating Particles Effect */
+.particles-container {
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 0;
+  overflow: hidden;
+}
+
+.particle {
+  position: absolute;
+  width: 4px;
+  height: 4px;
+  background: var(--primary-color);
+  border-radius: 50%;
+  opacity: 0.3;
+  animation: floatParticle 20s infinite linear;
+}
+
+@keyframes floatParticle {
+  0% { transform: translateY(100vh) rotate(0deg); opacity: 0; }
+  10% { opacity: 0.3; }
+  90% { opacity: 0.3; }
+  100% { transform: translateY(-100vh) rotate(720deg); opacity: 0; }
+}
+
+@keyframes pulse {
+  0%, 100% { opacity: 0.3; transform: scale(0.8); }
+  50% { opacity: 1; transform: scale(1.2); }
 }

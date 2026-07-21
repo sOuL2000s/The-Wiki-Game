@@ -70,6 +70,7 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      suppressHydrationWarning // Fix hydration mismatch from browser extensions
     >
       <body className="min-h-full flex flex-col">{children}</body>
     </html>

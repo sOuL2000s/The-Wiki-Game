@@ -21,17 +21,24 @@ const wikiHeaders = {
 
 // ---------- Persistence ----------
 const DATA_FILE = path.join(__dirname, 'rooms-data.json');
-const DISCONNECT_GRACE_MS = 90000; // 90s to reconnect before losing your spot
+const DISCONNECT_GRACE_MS = 120000; // Increased to 2 minutes
+const AUTO_SAVE_INTERVAL = 10000; // Auto-save every 10 seconds
 
 function loadRoomsFromDisk() {
     try {
         if (fs.existsSync(DATA_FILE)) {
             const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-            // The server just restarted, so every socket connection is gone.
-            // Treat everyone as "disconnected" and give them a window to rejoin.
+            // Restore room state with reconnection timers
             for (const [roomId, room] of Object.entries(data)) {
+                // Convert stored timestamps to Date objects if needed
+                if (room.lastActivity) {
+                    room.lastActivity = new Date(room.lastActivity);
+                }
+                
                 for (const [socketId, p] of Object.entries(room.players)) {
                     p.disconnected = true;
+                    p.reconnectAttempts = 0;
+                    p.lastSeen = Date.now();
                     p.disconnectTimer = setTimeout(() => {
                         removePlayerFromRoom(roomId, socketId);
                     }, DISCONNECT_GRACE_MS);
@@ -45,33 +52,161 @@ function loadRoomsFromDisk() {
     return {};
 }
 
+// Auto-save interval
+setInterval(() => {
+    saveRoomsToDisk();
+}, AUTO_SAVE_INTERVAL);
+
+// Improved save with compression and backup
 function saveRoomsToDisk() {
     try {
         const serializable = {};
         for (const [roomId, room] of Object.entries(rooms)) {
             serializable[roomId] = {
                 ...room,
+                lastActivity: room.lastActivity ? room.lastActivity.toISOString() : null,
                 players: Object.fromEntries(
                     Object.entries(room.players).map(([id, p]) => {
-                        const { disconnectTimer, ...rest } = p; // strip non-serializable timer
+                        const { disconnectTimer, ...rest } = p;
                         return [id, rest];
                     })
                 )
             };
         }
-        fs.writeFileSync(DATA_FILE, JSON.stringify(serializable), 'utf8');
+        
+        // Write to main file
+        fs.writeFileSync(DATA_FILE, JSON.stringify(serializable, null, 2), 'utf8');
+        
+        // Create backup
+        const backupFile = DATA_FILE.replace('.json', '-backup.json');
+        fs.writeFileSync(backupFile, JSON.stringify(serializable, null, 2), 'utf8');
     } catch (err) {
         console.error("Failed to save rooms to disk:", err.message);
     }
 }
 
+
+
 let saveTimeout = null;
+const rooms = loadRoomsFromDisk(); // rooms needs to be defined for persistence functions
+
+// Helper function to prepare room data for client emission (removes non-serializable objects)
+function getCleanRoomData(room) {
+    if (!room) return null;
+    return {
+        ...room,
+        // Ensure lastActivity is a serializable string for clients
+        lastActivity: room.lastActivity ? room.lastActivity.toISOString() : null,
+        players: Object.fromEntries(
+            Object.entries(room.players).map(([id, p]) => {
+                // Remove the disconnectTimer (circular object) before sending to client
+                const { disconnectTimer, ...cleanPlayer } = p;
+                return [id, cleanPlayer];
+            })
+        )
+    };
+}
+
+// --- Persistence Functions (defined early for hoisting/scoping) ---
+
+// Schedule save function
 function scheduleSave() {
     if (saveTimeout) clearTimeout(saveTimeout);
+    // Give a short delay to batch multiple updates (e.g., rapid clicks)
     saveTimeout = setTimeout(saveRoomsToDisk, 1500);
 }
 
-const rooms = loadRoomsFromDisk();
+// Save rooms to disk
+function saveRoomsToDisk() {
+    try {
+        // Use the same cleaning logic for disk saving as for client emission
+        const serializable = {};
+        for (const [roomId, room] of Object.entries(rooms)) {
+            serializable[roomId] = getCleanRoomData(room);
+        }
+        
+        // Write to main file
+        fs.writeFileSync(DATA_FILE, JSON.stringify(serializable, null, 2), 'utf8');
+        
+        // Create backup
+        const backupFile = DATA_FILE.replace('.json', '-backup.json');
+        fs.writeFileSync(backupFile, JSON.stringify(serializable, null, 2), 'utf8');
+    } catch (err) {
+        console.error("Failed to save rooms to disk:", err.message);
+    }
+}
+
+// Removes a player for good (used both by explicit "leave" and by the
+// disconnect grace-period timer once it expires).
+function removePlayerFromRoom(roomId, socketId) {
+    const room = rooms[roomId];
+    if (!room || !room.players[socketId]) return;
+
+    const username = room.players[socketId].username;
+    if (room.players[socketId].disconnectTimer) {
+        clearTimeout(room.players[socketId].disconnectTimer);
+    }
+    delete room.players[socketId];
+
+    if (room.hostId === socketId) {
+        const remainingPlayerIds = Object.keys(room.players);
+        room.hostId = remainingPlayerIds.length > 0 ? remainingPlayerIds[0] : null;
+    }
+
+    if (Object.keys(room.players).length === 0) {
+        delete rooms[roomId];
+        console.log(`Room ${roomId} is now empty and deleted.`);
+        scheduleSave(); // Save after deleting a room
+        return;
+    }
+
+    room.lastActivity = new Date(); // Update activity on player removal
+    io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
+    io.to(roomId).emit('chatMessage', { username: 'System', message: `${username} has left the room.`, timestamp: Date.now() });
+    scheduleSave(); // Save after player state change
+}
+
+// Load rooms from disk
+function loadRoomsFromDisk() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+            // Restore room state with reconnection timers
+            for (const [roomId, room] of Object.entries(data)) {
+                // Convert stored timestamps to Date objects if needed
+                if (room.lastActivity) {
+                    room.lastActivity = new Date(room.lastActivity);
+                }
+                
+                for (const [socketId, p] of Object.entries(room.players)) {
+                    // When loading, assume all players are disconnected and set up a grace period
+                    p.disconnected = true;
+                    p.reconnectAttempts = 0; // Reset reconnect attempts on server restart
+                    p.lastSeen = Date.now();
+                    p.disconnectTimer = setTimeout(() => {
+                        removePlayerFromRoom(roomId, socketId);
+                    }, DISCONNECT_GRACE_MS);
+                }
+                // Ensure status is 'waiting' if not already 'playing' to allow host to restart
+                if (room.status === 'playing' && Object.keys(room.players).length === 0) {
+                    // If a game was playing but all players are gone after restart, reset its state
+                    room.status = 'waiting'; 
+                    room.startTime = null;
+                }
+            }
+            return data;
+        }
+    } catch (err) {
+        console.error("Failed to load rooms from disk:", err.message);
+    }
+    return {};
+}
+
+// Auto-save interval (should call saveRoomsToDisk directly)
+setInterval(() => {
+    saveRoomsToDisk();
+}, AUTO_SAVE_INTERVAL);
+
 // ----------------------------------
 
 async function getRandomArticle() {
@@ -373,7 +508,7 @@ io.on('connection', (socket) => {
         }
 
         scheduleSave();
-        io.to(roomId).emit('roomUpdate', room);
+        io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
     });
 
     socket.on('startGame', (roomId) => {
@@ -381,7 +516,7 @@ io.on('connection', (socket) => {
             rooms[roomId].status = 'playing';
             rooms[roomId].startTime = Date.now();
             scheduleSave();
-            io.to(roomId).emit('roomUpdate', rooms[roomId]);
+            io.to(roomId).emit('roomUpdate', getCleanRoomData(rooms[roomId]));
         }
     });
 
@@ -410,7 +545,7 @@ io.on('connection', (socket) => {
             });
 
             scheduleSave();
-            io.to(roomId).emit('roomUpdate', rooms[roomId]);
+            io.to(roomId).emit('roomUpdate', getCleanRoomData(rooms[roomId]));
             io.to(roomId).emit('chatMessage', { username: 'System', message: 'The game has been reset for a new round!', timestamp: Date.now() });
         }
     });
@@ -476,7 +611,7 @@ io.on('connection', (socket) => {
         }
 
         scheduleSave();
-        io.to(roomId).emit('roomUpdate', room);
+        io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
     });
 
     socket.on('leaveRoom', ({ roomId }) => {
@@ -499,7 +634,7 @@ io.on('connection', (socket) => {
         }, DISCONNECT_GRACE_MS);
 
         scheduleSave();
-        io.to(roomId).emit('roomUpdate', room);
+        io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
         io.to(roomId).emit('chatMessage', {
             username: 'System',
             message: `${player.username} lost connection. They have a minute or two to reconnect...`,
@@ -514,7 +649,7 @@ io.on('connection', (socket) => {
             player.hintCount += 1;
             player.points -= 50;
             scheduleSave();
-            io.to(roomId).emit('roomUpdate', room);
+            io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
         }
     });
 
@@ -527,35 +662,6 @@ io.on('connection', (socket) => {
         }
     });
 });
-
-// Removes a player for good (used both by explicit "leave" and by the
-// disconnect grace-period timer once it expires).
-function removePlayerFromRoom(roomId, socketId) {
-    const room = rooms[roomId];
-    if (!room || !room.players[socketId]) return;
-
-    const username = room.players[socketId].username;
-    if (room.players[socketId].disconnectTimer) {
-        clearTimeout(room.players[socketId].disconnectTimer);
-    }
-    delete room.players[socketId];
-
-    if (room.hostId === socketId) {
-        const remainingPlayerIds = Object.keys(room.players);
-        room.hostId = remainingPlayerIds.length > 0 ? remainingPlayerIds[0] : null;
-    }
-
-    if (Object.keys(room.players).length === 0) {
-        delete rooms[roomId];
-        console.log(`Room ${roomId} is now empty and deleted.`);
-        scheduleSave();
-        return;
-    }
-
-    io.to(roomId).emit('roomUpdate', room);
-    io.to(roomId).emit('chatMessage', { username: 'System', message: `${username} has left the room.`, timestamp: Date.now() });
-    scheduleSave();
-}
 
 app.get('/api/wiki/:title', async (req, res) => {
     const data = await getArticleData(req.params.title);

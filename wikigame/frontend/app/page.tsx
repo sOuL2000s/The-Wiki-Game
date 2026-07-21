@@ -1,8 +1,8 @@
-// frontend\app\page.tsx
+// frontend/app/page.tsx
 "use client";
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import { useRouter } from 'next/navigation';
-import { Loader2 } from 'lucide-react';
+import { Loader2, Sparkles, Trophy, Users } from 'lucide-react';
 
 export default function Home() {
   const [username, setUsername] = useState('');
@@ -10,7 +10,45 @@ export default function Home() {
   const [userError, setUserError] = useState<string | null>(null);
   const [roomError, setRoomError] = useState<string | null>(null);
   const [isJoining, setIsJoining] = useState(false);
+  const [usernameSuggestions, setUsernameSuggestions] = useState<string[]>([]);
+  const [particles, setParticles] = useState<Array<{
+    left: string;
+    animationDelay: string;
+    animationDuration: string;
+    width: string;
+    height: string;
+  }>>([]);
+  const [isMounted, setIsMounted] = useState(false);
   const router = useRouter();
+
+  // Generate particles only on client side
+  useEffect(() => {
+    setIsMounted(true);
+    const newParticles = Array.from({ length: 30 }, () => ({
+      left: `${Math.random() * 100}%`,
+      animationDelay: `${Math.random() * 20}s`,
+      animationDuration: `${15 + Math.random() * 20}s`,
+      width: `${2 + Math.random() * 4}px`,
+      height: `${2 + Math.random() * 4}px`,
+    }));
+    setParticles(newParticles);
+
+    // Generate username suggestions here as well, since they also involve Math.random()
+    const suggestions = [
+      'WikiRacer',
+      'SpeedReader',
+      'LinkHunter',
+      'ArticleExplorer',
+      'KnowledgeSeeker',
+      'PageNavigator',
+      'InfoGatherer',
+      'FactFinder',
+      'LinkJumper',
+      'RaceMaster'
+    ];
+    const shuffled = suggestions.sort(() => Math.random() - 0.5);
+    setUsernameSuggestions(shuffled.slice(0, 3));
+  }, []); // Empty dependency array means this runs once on client mount
 
   const validateUser = (u: string) => {
     const userRegex = /^[a-zA-Z0-9]{3,15}$/;
@@ -48,66 +86,138 @@ export default function Home() {
     }
   };
 
-  return (
-    <main className="flex min-h-screen flex-col items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4 dark:from-slate-900 dark:to-slate-800">
-      <div className="w-full max-w-md bg-white dark:bg-slate-800 p-8 rounded-2xl shadow-xl border border-slate-200 dark:border-slate-700">
-        <div className="flex flex-col items-center mb-8">
-          <img src="/logo.svg" alt="WikiRace Logo" className="w-20 h-20 mb-4 drop-shadow-md" />
-          <h1 className="text-4xl font-bold text-center text-blue-600 dark:text-blue-400 tracking-tight">WikiRace</h1>
-        </div>
-        <p className="text-center text-slate-600 dark:text-slate-300 mb-8 font-medium">Race to the goal article in the fewest clicks!</p>
-        
-        <form onSubmit={handleJoin} className="space-y-6">
-          <div className="space-y-1">
-            <input
-              type="text"
-              placeholder="Your Username"
-              className={`w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all duration-200 dark:bg-slate-700 dark:text-white ${userError ? 'border-red-400 bg-red-50 dark:bg-red-900/10' : 'border-slate-300 dark:border-slate-600'}`}
-              value={username}
-              onChange={(e) => {
-                const val = e.target.value.replace(/[^a-zA-Z0-9]/g, '');
-                setUsername(val);
-                validateUser(val);
-              }}
-              maxLength={15}
-            />
-            <div className={`overflow-hidden transition-all duration-300 ease-in-out ${userError ? 'max-h-10 opacity-100' : 'max-h-0 opacity-0'}`}>
-              <p className="text-red-500 text-xs font-semibold px-1">{userError}</p>
-            </div>
-          </div>
+  // Don't render particles on server, only on client
+  const renderParticles = () => {
+    if (!isMounted) return null; // Only render particles after client mount
+    return particles.map((particle, i) => (
+      <div
+        key={i}
+        className="particle"
+        style={{
+          left: particle.left,
+          animationDelay: particle.animationDelay,
+          animationDuration: particle.animationDuration,
+          width: particle.width,
+          height: particle.height,
+        }}
+      />
+    ));
+  };
 
-          <div className="space-y-1">
-            <input
-              type="text"
-              placeholder="Room Code (Numbers only)"
-              className={`w-full p-3 border rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent outline-none transition-all duration-200 dark:bg-slate-700 dark:text-white ${roomError ? 'border-red-400 bg-red-50 dark:bg-red-900/10' : 'border-slate-300 dark:border-slate-600'}`}
-              value={room}
-              onChange={(e) => {
-                const val = e.target.value.replace(/[^0-9]/g, '');
-                setRoom(val);
-                validateRoom(val);
-              }}
-              maxLength={10}
-            />
-            <div className={`overflow-hidden transition-all duration-300 ease-in-out ${roomError ? 'max-h-10 opacity-100' : 'max-h-0 opacity-0'}`}>
-              <p className="text-red-500 text-xs font-semibold px-1">{roomError}</p>
+  return (
+    <main className="relative flex min-h-screen flex-col items-center justify-center overflow-hidden">
+      {/* Background particles - only render on client */}
+      <div className="particles-container">
+        {renderParticles()}
+      </div>
+
+      <div className="relative z-10 w-full max-w-md animate-in fade-in slide-in-from-bottom-4 duration-700">
+        <div className="glass rounded-3xl p-8 shadow-2xl">
+          <div className="flex flex-col items-center mb-8">
+            <div className="relative">
+              <div className="pulse-ring rounded-full">
+                <img src="/logo.svg" alt="WikiRace Logo" className="w-24 h-24 mb-4 drop-shadow-2xl" />
+              </div>
+              <Sparkles className="absolute -top-2 -right-2 text-yellow-400 animate-pulse" size={24} />
             </div>
+            <h1 className="text-5xl font-black text-center bg-gradient-to-r from-blue-400 to-purple-400 bg-clip-text text-transparent tracking-tight">
+              WikiRace
+            </h1>
+            <p className="text-center text-white/60 mt-2 text-sm font-medium">
+              Race through Wikipedia in the fewest clicks!
+            </p>
           </div>
-          <button
-            type="submit"
-            disabled={!username.trim() || !room.trim() || isJoining}
-            className="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-blue-500 dark:hover:bg-blue-600"
-          >
-            {isJoining ? (
-              <span className="flex items-center justify-center gap-2">
-                <Loader2 className="animate-spin" size={18} />
-                Joining Race...
+          
+          <form onSubmit={handleJoin} className="space-y-5">
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-white/70 block mb-1">
+                Choose your racer name
+              </label>
+              <input
+                type="text"
+                placeholder="Enter username..."
+                className={`w-full p-3.5 rounded-xl glass transition-all duration-200 outline-none text-white placeholder-white/30
+                  ${userError ? 'border-red-400 ring-2 ring-red-400/30' : 'focus:ring-2 focus:ring-blue-400/50'}`}
+                value={username}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/[^a-zA-Z0-9]/g, '');
+                  setUsername(val);
+                  validateUser(val);
+                }}
+                maxLength={15}
+              />
+              {isMounted && usernameSuggestions.length > 0 && !username && (
+                <div className="flex gap-2 mt-2 flex-wrap">
+                  <span className="text-xs text-white/40">Try:</span>
+                  {usernameSuggestions.map(suggestion => (
+                    <button
+                      key={suggestion}
+                      type="button"
+                      onClick={() => setUsername(suggestion)}
+                      className="text-xs px-2 py-1 rounded-full glass hover:bg-white/10 transition-colors text-white/60 hover:text-white"
+                    >
+                      {suggestion}
+                    </button>
+                  ))}
+                </div>
+              )}
+              <div className={`overflow-hidden transition-all duration-300 ease-in-out ${userError ? 'max-h-10 opacity-100 mt-1' : 'max-h-0 opacity-0'}`}>
+                <p className="text-red-400 text-xs font-semibold px-1">{userError}</p>
+              </div>
+            </div>
+
+            <div className="space-y-1">
+              <label className="text-sm font-medium text-white/70 block mb-1">
+                Room Code
+              </label>
+              <input
+                type="text"
+                placeholder="Enter 3-10 digit room code..."
+                className={`w-full p-3.5 rounded-xl glass transition-all duration-200 outline-none text-white placeholder-white/30
+                  ${roomError ? 'border-red-400 ring-2 ring-red-400/30' : 'focus:ring-2 focus:ring-blue-400/50'}`}
+                value={room}
+                onChange={(e) => {
+                  const val = e.target.value.replace(/[^0-9]/g, '');
+                  setRoom(val);
+                  validateRoom(val);
+                }}
+                maxLength={10}
+              />
+              <div className={`overflow-hidden transition-all duration-300 ease-in-out ${roomError ? 'max-h-10 opacity-100 mt-1' : 'max-h-0 opacity-0'}`}>
+                <p className="text-red-400 text-xs font-semibold px-1">{roomError}</p>
+              </div>
+            </div>
+
+            <button
+              type="submit"
+              disabled={!username.trim() || !room.trim() || isJoining}
+              className="w-full py-3.5 rounded-xl font-bold text-white transition-all duration-300 relative overflow-hidden group
+                disabled:opacity-50 disabled:cursor-not-allowed
+                bg-gradient-to-r from-blue-500 to-purple-500 hover:shadow-lg hover:shadow-blue-500/30"
+            >
+              <span className="relative z-10 flex items-center justify-center gap-2">
+                {isJoining ? (
+                  <>
+                    <Loader2 className="animate-spin" size={18} />
+                    Joining Race...
+                  </>
+                ) : (
+                  <>
+                    <Users size={18} />
+                    Enter Race
+                    <Trophy className="text-yellow-300" size={16} />
+                  </>
+                )}
               </span>
-            ) : (
-              'Enter Race'
-            )}
-          </button>
-        </form>
+            </button>
+          </form>
+
+          <div className="mt-6 text-center">
+            <p className="text-xs text-white/30">
+              🏁 Race against others to reach the goal article first!
+            </p>
+          </div>
+        </div>
       </div>
     </main>
   );

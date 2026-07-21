@@ -6,6 +6,7 @@ import io, { Socket } from 'socket.io-client';
 import { ExternalLink, Loader2, Trophy, Search, Info, X, ChevronUp, ChevronDown } from 'lucide-react';
 import { Menu } from 'lucide-react';
 import Mark from 'mark.js';
+import { useGameState } from '@/app/hooks/useGameState';
 
 interface Player {
   id: string;
@@ -83,6 +84,8 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const searchParams = useSearchParams();
   const username = searchParams.get('user');
   
+  const { state: savedState, saveState } = useGameState(roomId, username || '');
+
   const [roomData, setRoomData] = useState<RoomData | null>(null);
   const [html, setHtml] = useState<string>("");
   const [loadingArticle, setLoadingArticle] = useState(false);
@@ -104,12 +107,14 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const headerRef = useRef<HTMLDivElement>(null);
   const articleRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
+  const mainContainerRef = useRef<HTMLDivElement>(null); // Add a ref for the main container
   const markInstance = useRef<Mark | null>(null);
   const markedNodeRef = useRef<HTMLElement | null>(null);
   
   // Refs to keep handleWikiClick stable to prevent WikiArticle from re-rendering
-  const roomDataRef = useRef<RoomData | null>(null);
+  const roomDataRef = useRef<RoomData | null>(roomData);
   const loadingArticleRef = useRef(false);
+  const lastSavedStateRef = useRef<string>(''); // Added for useGameState optimization
 
   useEffect(() => { roomDataRef.current = roomData; }, [roomData]);
   useEffect(() => { loadingArticleRef.current = loadingArticle; }, [loadingArticle]);
@@ -225,7 +230,12 @@ export default function Game({ params }: { params: { roomId: string } }) {
             }
             const data = await res.json();
             setHtml(data.html); 
-            window.scrollTo(0, 0); 
+            
+            // Scroll the MAIN CONTAINER to top, not window
+            if (mainContainerRef.current) {
+              mainContainerRef.current.scrollTop = 0;
+            }
+            
             setLoadingArticle(false); // Set loading OFF on success
         } catch (e: any) { 
             console.error("Frontend: Error fetching article content for display:", e.message);
@@ -491,6 +501,27 @@ export default function Game({ params }: { params: { roomId: string } }) {
     }
   };
 
+  useEffect(() => {
+    if (roomData && socketInstance?.id) {
+      const me = roomData.players[socketInstance.id];
+      if (me) {
+        // Create a string representation to compare
+        const stateToSave = {
+          currentArticle: me.currentArticle,
+          history: me.history,
+          clicks: me.clicks,
+          points: me.points
+        };
+        const stateString = JSON.stringify(stateToSave);
+        
+        // Only save if the state actually changed
+        if (stateString !== lastSavedStateRef.current) {
+          lastSavedStateRef.current = stateString;
+          saveState(stateToSave);
+        }
+      }
+    }
+  }, [roomData, socketInstance?.id, saveState]);
 
   if (!roomData || !socketInstance) return ( // Add check for socketInstance here
     <div className="flex flex-col items-center justify-center h-screen bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl px-6 text-center">
@@ -736,7 +767,10 @@ export default function Game({ params }: { params: { roomId: string } }) {
         </aside>
 
         {/* Main Content Area */}
-        <main className="flex-1 overflow-y-auto p-4 md:p-10 bg-white dark:bg-slate-900 relative">
+        <main 
+          ref={mainContainerRef}
+          className="flex-1 overflow-y-auto p-4 md:p-10 bg-white dark:bg-slate-900 relative"
+        >
           {/* Overlay to close sidebar on mobile when main content is clicked */}
           {showMobileSidebar && (
             <div 
@@ -812,42 +846,6 @@ export default function Game({ params }: { params: { roomId: string } }) {
                       </div>
                     </React.Fragment>
                   ))}
-                </div>
-              </div>
-
-              <div className="w-full">
-                <h3 className="text-2xl font-bold mb-6 text-slate-800 dark:text-slate-200">Leaderboard</h3>
-                <div className="grid gap-4">
-                  {Object.values(roomData.players)
-                    .sort((a, b) => {
-                      if (a.lost && !b.lost) return 1;
-                      if (!a.lost && b.lost) return -1;
-                      if (a.finished && !b.finished) return -1;
-                      if (!a.finished && b.finished) return 1;
-                      return a.clicks - b.clicks || (a.time || 0) - (b.time || 0);
-                    })
-                    .map((p, idx) => (
-                      <div key={p.id} className={`flex items-center justify-between p-4 md:p-5 rounded-2xl border-2 transition-all duration-300 ${idx === 0 ? 'bg-yellow-50 border-yellow-400 scale-105 shadow-yellow-100 dark:bg-yellow-900/20 dark:border-yellow-700' : 'bg-white dark:bg-slate-800 border-slate-100 dark:border-slate-700 shadow-sm'}`}>
-                        <div className="flex items-center gap-3 md:gap-5">
-                          <div className={`w-8 h-8 md:w-10 md:h-10 rounded-full flex items-center justify-center font-black text-lg ${idx === 0 ? 'bg-yellow-400 text-white' : 'bg-slate-100 dark:bg-slate-700 text-slate-500'}`}>
-                            {idx + 1}
-                          </div>
-                          <div className="text-left">
-                            <span className="font-bold text-lg block leading-tight">{p.username} {p.id === socketInstance?.id && '(You)'}</span>
-                            {p.time && <span className="text-xs text-slate-500 dark:text-slate-400">{Math.floor(p.time)}s total time</span>}
-                          </div>
-                        </div>
-                        <div className="text-right">
-                          <div className="flex items-baseline gap-1 justify-end">
-                            <span className="font-mono font-black text-2xl text-blue-600 dark:text-blue-400">{p.clicks}</span>
-                            <span className="text-xs font-bold text-slate-400 uppercase">Clicks</span>
-                          </div>
-                          <span className={`text-xs font-black px-2 py-0.5 rounded uppercase ${p.lost ? 'bg-red-100 text-red-600' : p.finished ? 'bg-green-100 text-green-600' : 'bg-blue-100 text-blue-600'}`}>
-                            {p.lost ? 'Eliminated' : p.finished ? 'Finished' : 'Racing'}
-                          </span>
-                        </div>
-                      </div>
-                    ))}
                 </div>
               </div>
 
@@ -942,8 +940,24 @@ export default function Game({ params }: { params: { roomId: string } }) {
                 </div>
               )}
               {loadingArticle && (
-                <div className="absolute inset-0 flex items-center justify-center bg-white bg-opacity-70 dark:bg-slate-900 dark:bg-opacity-70 z-10">
-                  <Loader2 className="animate-spin text-blue-500 dark:text-blue-400" size={48} />
+                <div className="fixed inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm z-50">
+                  <div className="glass rounded-2xl p-8 text-center animate-in fade-in zoom-in duration-300">
+                    <Loader2 className="animate-spin text-blue-400 mx-auto mb-4" size={48} />
+                    <p className="text-white font-medium">Loading article...</p>
+                    <p className="text-white/40 text-sm mt-1">Getting the latest content</p>
+                    <div className="mt-4 flex gap-1 justify-center">
+                      {[...Array(3)].map((_, i) => (
+                        <div
+                          key={i}
+                          className="w-2 h-2 rounded-full bg-blue-400"
+                          style={{
+                            animation: 'pulse 1s ease-in-out infinite',
+                            animationDelay: `${i * 0.3}s`,
+                          }}
+                        />
+                      ))}
+                    </div>
+                  </div>
                 </div>
               )}
               {articleFetchError && (
