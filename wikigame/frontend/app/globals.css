@@ -56,7 +56,7 @@ body {
   min-height: 100vh;
 }
 
-/* Enhanced Glassmorphism Effects */
+/* Glassmorphism Effects */
 .glass {
   background: rgba(255, 255, 255, 0.08);
   backdrop-filter: blur(20px);
@@ -114,72 +114,423 @@ body {
   50% { background-position: 100% 50%; }
 }
 
-/* Enhanced Prose Styling */
-.prose {
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  font-size: 1.1rem;
-  padding: 2rem 2.5rem;
-  background: rgba(255, 255, 255, 0.05);
-  border-radius: 1.5rem;
-  backdrop-filter: blur(10px);
-  border: 1px solid rgba(255, 255, 255, 0.06);
-  @apply text-foreground; /* Use foreground color */
-  max-width: 800px; /* Max width for readability, can adjust */
-  margin-left: auto;
-  margin-right: auto;
+/* ======================================== */
+/* WIKIPEDIA-STYLE ARTICLE STYLING          */
+/* Preserves Wikipedia's original look      */
+/* ======================================== */
+
+.wiki-article-container {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  line-height: 1.6;
+  color: #202122;
+  background: #ffffff;
+  padding: 24px 32px;
+  border-radius: 8px;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.05);
 }
 
-/* Modern Article Styling */
-/* .prose { // This block is now merged into the main .prose above
-  font-family: 'Inter', system-ui, -apple-system, sans-serif;
-  font-size: 1.1rem;
-} */
-
-.prose p {
-  @apply mb-6 leading-relaxed;
+.dark .wiki-article-container {
+  color: #e8e8e8;
+  background: #1a1a2e;
 }
 
-/* Links */
-.prose a {
-  @apply text-primary underline hover:no-underline;
-  word-break: break-word; /* Prevent long links from overflowing */
-  position: relative;
-  transition: all 0.3s ease;
+/* Wikipedia-style headings */
+.wiki-article-container h1,
+.wiki-article-container h2,
+.wiki-article-container h3,
+.wiki-article-container h4,
+.wiki-article-container h5,
+.wiki-article-container h6 {
+  font-family: 'Georgia', 'Times New Roman', serif;
+  font-weight: 700;
+  line-height: 1.3;
+  margin-top: 1.2em;
+  margin-bottom: 0.5em;
+  border-bottom: 1px solid #a2a9b1;
+  padding-bottom: 0.2em;
+}
+
+.dark .wiki-article-container h1,
+.dark .wiki-article-container h2,
+.dark .wiki-article-container h3,
+.dark .wiki-article-container h4,
+.dark .wiki-article-container h5,
+.dark .wiki-article-container h6 {
+  border-bottom-color: #4a4a5a;
+}
+
+.wiki-article-container h1 {
+  font-size: 2.2em;
+  font-weight: 400;
+  border-bottom: 1px solid #a2a9b1;
+  padding-bottom: 0.3em;
+  margin-top: 0.5em;
+}
+
+.wiki-article-container h2 {
+  font-size: 1.8em;
+  font-weight: 400;
+  border-bottom: 1px solid #a2a9b1;
+}
+
+.wiki-article-container h3 {
+  font-size: 1.4em;
+  font-weight: 600;
+  border-bottom: none;
+}
+
+.wiki-article-container h4 {
+  font-size: 1.2em;
+  font-weight: 600;
+  border-bottom: none;
+}
+
+.wiki-article-container h5 {
+  font-size: 1.1em;
+  font-weight: 600;
+  border-bottom: none;
+}
+
+.wiki-article-container h6 {
+  font-size: 1.0em;
+  font-weight: 600;
+  border-bottom: none;
+}
+
+/* Wikipedia-style paragraphs */
+.wiki-article-container p {
+  margin: 0.5em 0 0.8em 0;
+  line-height: 1.65;
+}
+
+/* Wikipedia-style links */
+.wiki-article-container a {
+  color: #0645ad;
   text-decoration: none;
-  border-bottom: 2px solid transparent;
-}
-/* Style for links with data-title attribute (internal links for our game) */
-.prose a[data-title] {
-  @apply text-blue-600 dark:text-blue-400 font-medium;
-  /* Add specific styling to make them stand out as navigable within the game */
+  background: none;
+  padding: 0 1px;
+  border-radius: 2px;
+  transition: all 0.15s ease;
 }
 
-.prose a[data-title]:hover {
-  color: var(--primary-color);
-  border-bottom-color: var(--primary-color);
-  transform: translateY(-1px);
+.dark .wiki-article-container a {
+  color: #6ba3ff;
 }
 
-.prose a[data-title]::after {
-  content: '→';
-  margin-left: 4px;
-  opacity: 0;
-  transition: all 0.3s ease;
-  display: inline-block;
+.wiki-article-container a[data-title] {
+  color: #0645ad;
+  font-weight: 500;
+  cursor: pointer;
+  position: relative;
 }
 
-.prose a[data-title]:hover::after {
-  opacity: 1;
-  transform: translateX(4px);
+.dark .wiki-article-container a[data-title] {
+  color: #6ba3ff;
 }
 
-/* Style for external links */
-.prose a[target="_blank"] {
-  @apply text-slate-500 dark:text-slate-400 text-sm;
-  /* You can add an external link icon here if you want, e.g., using a background image */
+.wiki-article-container a[data-title]:hover {
+  color: #0b0080;
+  background-color: #e8f0fe;
+  text-decoration: underline;
+  text-decoration-color: #0645ad;
+  text-decoration-thickness: 1px;
 }
 
-/* Custom Scrollbar for better appearance */
+.dark .wiki-article-container a[data-title]:hover {
+  color: #8ab4f8;
+  background-color: #2a2a4a;
+  text-decoration-color: #6ba3ff;
+}
+
+/* Wikipedia-style links that are clickable for navigation */
+.wiki-article-container a[data-title]::after {
+  content: '';
+  display: none;
+}
+
+/* External links */
+.wiki-article-container a[target="_blank"] {
+  color: #0645ad;
+  background: none;
+  padding-right: 13px;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%230645ad' d='M10.5 6v4a.5.5 0 0 1-.5.5H2a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5h4v1H3v7h7V6h.5z'/%3E%3Cpath fill='%230645ad' d='M11 1v4l-1.5-1.5-3 3L6 5.5l3-3L7.5 1H11z'/%3E%3C/svg%3E");
+  background-repeat: no-repeat;
+  background-position: right center;
+  background-size: 10px;
+}
+
+.dark .wiki-article-container a[target="_blank"] {
+  color: #6ba3ff;
+  background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath fill='%236ba3ff' d='M10.5 6v4a.5.5 0 0 1-.5.5H2a.5.5 0 0 1-.5-.5V2a.5.5 0 0 1 .5-.5h4v1H3v7h7V6h.5z'/%3E%3Cpath fill='%236ba3ff' d='M11 1v4l-1.5-1.5-3 3L6 5.5l3-3L7.5 1H11z'/%3E%3C/svg%3E");
+}
+
+/* Wikipedia-style tables */
+.wiki-article-container table {
+  border-collapse: collapse;
+  margin: 1em 0;
+  font-size: 0.95em;
+  width: 100%;
+}
+
+.wiki-article-container table.wikitable,
+.wiki-article-container table.wikitable td,
+.wiki-article-container table.wikitable th {
+  border: 1px solid #a2a9b1;
+  padding: 4px 8px;
+}
+
+.dark .wiki-article-container table.wikitable,
+.dark .wiki-article-container table.wikitable td,
+.dark .wiki-article-container table.wikitable th {
+  border-color: #4a4a5a;
+}
+
+.wiki-article-container table.wikitable th {
+  background-color: #eaecf0;
+  text-align: center;
+}
+
+.dark .wiki-article-container table.wikitable th {
+  background-color: #2a2a4a;
+}
+
+.wiki-article-container table.wikitable tr:nth-child(even) {
+  background-color: #f8f9fa;
+}
+
+.dark .wiki-article-container table.wikitable tr:nth-child(even) {
+  background-color: #222236;
+}
+
+/* Wikipedia-style images */
+.wiki-article-container img {
+  max-width: 100%;
+  height: auto;
+  border: 1px solid #c8ccd1;
+  border-radius: 2px;
+  padding: 4px;
+  background: #f8f9fa;
+}
+
+.dark .wiki-article-container img {
+  border-color: #4a4a5a;
+  background: #2a2a4a;
+}
+
+.wiki-article-container .thumb {
+  margin: 0.5em 0;
+  padding: 4px;
+  border: 1px solid #c8ccd1;
+  background: #f8f9fa;
+  border-radius: 2px;
+  max-width: 100%;
+}
+
+.dark .wiki-article-container .thumb {
+  border-color: #4a4a5a;
+  background: #2a2a4a;
+}
+
+.wiki-article-container .thumbinner {
+  padding: 4px;
+  max-width: 100%;
+}
+
+.wiki-article-container .thumbcaption {
+  font-size: 0.9em;
+  text-align: left;
+  padding: 4px 0;
+  color: #202122;
+}
+
+.dark .wiki-article-container .thumbcaption {
+  color: #e8e8e8;
+}
+
+.wiki-article-container .floatleft {
+  float: left;
+  margin: 0.5em 1em 0.5em 0;
+  clear: left;
+}
+
+.wiki-article-container .floatright {
+  float: right;
+  margin: 0.5em 0 0.5em 1em;
+  clear: right;
+}
+
+/* Wikipedia-style lists */
+.wiki-article-container ul {
+  margin: 0.3em 0 0.5em 1.6em;
+  padding: 0;
+  list-style-type: disc;
+}
+
+.wiki-article-container ol {
+  margin: 0.3em 0 0.5em 1.6em;
+  padding: 0;
+  list-style-type: decimal;
+}
+
+.wiki-article-container li {
+  margin-bottom: 0.1em;
+}
+
+.wiki-article-container ul ul {
+  list-style-type: circle;
+  margin-top: 0;
+}
+
+.wiki-article-container ul ul ul {
+  list-style-type: square;
+}
+
+/* Wikipedia-style blockquotes */
+.wiki-article-container blockquote {
+  margin: 0.5em 0 0.8em 1.6em;
+  padding: 0 0 0 0.8em;
+  border-left: 3px solid #c8ccd1;
+  color: #202122;
+}
+
+.dark .wiki-article-container blockquote {
+  border-left-color: #4a4a5a;
+  color: #e8e8e8;
+}
+
+/* Wikipedia-style infobox handling */
+.wiki-article-container .infobox {
+  float: right;
+  clear: right;
+  margin: 0 0 1em 1em;
+  padding: 4px 8px;
+  border: 1px solid #a2a9b1;
+  background: #f8f9fa;
+  font-size: 0.9em;
+  max-width: 320px;
+}
+
+.dark .wiki-article-container .infobox {
+  border-color: #4a4a5a;
+  background: #2a2a4a;
+}
+
+/* Wikipedia-style citation */
+.wiki-article-container .reference {
+  font-size: 0.8em;
+  vertical-align: super;
+  line-height: 1;
+}
+
+/* Wikipedia-style hatnotes */
+.wiki-article-container .hatnote {
+  font-style: italic;
+  padding: 0.2em 0;
+  margin-bottom: 0.8em;
+  color: #202122;
+}
+
+.dark .wiki-article-container .hatnote {
+  color: #e8e8e8;
+}
+
+/* Wikipedia-style redirect */
+.wiki-article-container .redirectMsg {
+  border: 1px solid #a2a9b1;
+  padding: 4px 8px;
+  margin-bottom: 1em;
+  background: #f8f9fa;
+  font-size: 0.95em;
+}
+
+.dark .wiki-article-container .redirectMsg {
+  border-color: #4a4a5a;
+  background: #2a2a4a;
+}
+
+/* Wikipedia-style search highlight */
+.search-highlight {
+  background-color: #ffff66;
+  padding: 0 2px;
+  border-radius: 2px;
+  box-shadow: 0 0 3px rgba(255, 255, 0, 0.3);
+}
+
+.dark .search-highlight {
+  background-color: #4a4a2a;
+  color: #e8e8e8;
+}
+
+.current-search-highlight {
+  background-color: #ffcc00 !important;
+  padding: 0 2px;
+  border-radius: 2px;
+  box-shadow: 0 0 8px rgba(255, 204, 0, 0.6);
+  outline: 2px solid #ffcc00;
+}
+
+.dark .current-search-highlight {
+  background-color: #cc9900 !important;
+  box-shadow: 0 0 8px rgba(204, 153, 0, 0.6);
+}
+
+/* Hint highlighting */
+.hint-highlight {
+  background-color: #ffdd66 !important;
+  padding: 0 3px !important;
+  border-radius: 3px !important;
+  box-shadow: 0 0 15px rgba(255, 220, 100, 0.5) !important;
+  animation: hintPulse 2s ease-in-out;
+}
+
+@keyframes hintPulse {
+  0% { transform: scale(1); }
+  30% { transform: scale(1.08); }
+  60% { transform: scale(1); }
+  100% { transform: scale(1); }
+}
+
+/* Mobile responsiveness for article */
+@media (max-width: 768px) {
+  .wiki-article-container {
+    padding: 16px 18px;
+  }
+  
+  .wiki-article-container h1 {
+    font-size: 1.8em;
+  }
+  
+  .wiki-article-container h2 {
+    font-size: 1.5em;
+  }
+  
+  .wiki-article-container .infobox {
+    float: none;
+    margin: 1em auto;
+    max-width: 100%;
+  }
+  
+  .wiki-article-container .floatleft,
+  .wiki-article-container .floatright {
+    float: none;
+    margin: 0.5em auto;
+    display: block;
+    text-align: center;
+  }
+  
+  .wiki-article-container img {
+    max-width: 100%;
+    height: auto;
+  }
+  
+  .wiki-article-container table {
+    font-size: 0.85em;
+    display: block;
+    overflow-x: auto;
+  }
+}
+
+/* Scrollbar styling */
 ::-webkit-scrollbar {
   width: 8px;
   height: 8px;
@@ -194,135 +545,6 @@ body {
 }
 ::-webkit-scrollbar-thumb:hover {
   background: var(--primary-dark);
-}
-
-
-/* Headings */
-.prose h1 {
-  @apply text-3xl md:text-4xl font-extrabold mb-4 pb-2 border-b border-[var(--border-color)] text-slate-800 dark:text-slate-100;
-  margin-top: 0; /* Remove top margin for first h1 */
-}
-.prose h2 {
-  @apply text-2xl md:text-3xl font-bold mt-8 mb-3 pb-1 border-b border-[var(--border-color)] text-slate-700 dark:text-slate-200;
-}
-.prose h3 {
-  @apply text-xl md:text-2xl font-semibold mt-6 mb-2 text-slate-600 dark:text-slate-300;
-}
-.prose h4 {
-  @apply text-lg md:text-xl font-semibold mt-5 mb-2 text-slate-600 dark:text-slate-400;
-}
-.prose h5 {
-  @apply text-base md:text-lg font-medium mt-4 mb-1 text-slate-500 dark:text-slate-400;
-}
-.prose h6 {
-  @apply text-sm md:text-base font-medium mt-3 mb-1 text-slate-500 dark:text-slate-500;
-}
-
-/* Paragraphs */
-/* This is already handled by .prose p above
-.prose p {
-  @apply mb-4 leading-relaxed;
-}
-*/
-
-/* Lists */
-.prose ul {
-  @apply list-disc ml-6 mb-4;
-}
-.prose ol {
-  @apply list-decimal ml-6 mb-4;
-}
-.prose li {
-  @apply mb-1;
-}
-
-/* Strong / Bold text */
-.prose strong {
-  @apply font-semibold text-slate-800 dark:text-slate-200;
-}
-
-/* Blockquotes */
-.prose blockquote {
-  @apply border-l-4 border-primary pl-4 italic text-slate-600 dark:text-slate-300 my-6;
-}
-
-/* Tables */
-.prose table.wiki-table {
-  @apply w-full border-collapse my-6 text-sm md:text-base;
-  /* Add overflow-x-auto to a wrapper div if you want tables to scroll horizontally on small screens */
-  /* This needs to be applied to a parent of the table, not the table itself */
-  display: block; /* Allows table to scroll if it's too wide */
-  overflow-x: auto; /* Horizontal scrolling for tables */
-  white-space: nowrap; /* Prevent text wrapping inside table cells for better scrolling */
-}
-.prose table.wiki-table th,
-.prose table.wiki-table td {
-  @apply border border-[var(--border-color)] px-4 py-2 text-left align-top;
-  white-space: normal; /* Allow text to wrap within cells once scrolled into view */
-}
-.prose table.wiki-table th {
-  @apply bg-slate-100 dark:bg-slate-700 font-semibold text-slate-700 dark:text-slate-200;
-}
-.prose table.wiki-table tr:nth-child(even) {
-  @apply bg-slate-50 dark:bg-slate-800; /* Zebra striping for readability */
-}
-
-/* Images */
-.prose img {
-  @apply max-w-full h-auto rounded-lg my-6 mx-auto block shadow-md;
-  /* For floating images, you might need to adjust this more specifically */
-  /* Wikipedia often wraps images in <figure> or divs for floating. */
-  /* Consider styling figures if they become problematic */
-}
-.prose figure {
-    @apply my-6 mx-auto;
-}
-.prose figcaption {
-    @apply text-center text-sm text-slate-500 dark:text-slate-400 mt-2;
-}
-
-/* Horizontal Rule */
-.prose hr {
-  @apply border-t border-[var(--border-color)] my-8;
-}
-
-/* Code and Preformatted Text */
-.prose code {
-  @apply bg-slate-100 dark:bg-slate-700 text-red-600 dark:text-red-400 p-1 rounded font-mono text-sm;
-}
-.prose pre {
-  @apply bg-slate-100 dark:bg-slate-800 p-4 rounded-lg overflow-x-auto text-sm font-mono my-6;
-}
-
-/* Superscript (e.g., for references) */
-.prose sup {
-  @apply text-xs align-super leading-none;
-}
-
-/* Definition lists */
-.prose dl {
-  @apply my-6;
-}
-.prose dt {
-  @apply font-semibold text-slate-800 dark:text-slate-200 mt-2;
-}
-.prose dd {
-  @apply ml-4 mb-2 text-slate-600 dark:text-slate-300;
-}
-
-/* Remove or hide Wikipedia-specific elements that are not relevant for the game */
-/* These are now mostly handled by the backend cleaning, but keep as fallback */
-.prose .mw-editsection,
-.prose .infobox,
-.prose .navbox,
-.prose .reference,
-.prose .sistersitebox,
-.prose .noprint,
-.prose .metadata,
-.prose .hatnote,
-.prose .ambox,
-.prose .dablink {
-  display: none !important;
 }
 
 /* Custom loading spinner */
@@ -341,66 +563,10 @@ body {
   }
 }
 
-/* Utility to ensure article content container handles table overflow */
+/* Article content wrapper for overflow handling */
 .article-content-wrapper {
-  /* This div would wrap the `dangerouslySetInnerHTML` output */
   overflow-x: auto;
-  padding-bottom: 1rem; /* Space for scrollbar */
-}
-
-/* Hint Highlighting */
-.hint-highlight {
-  background-color: rgba(251, 191, 36, 0.4) !important; /* yellow-400/40 */
-  box-shadow: 0 0 10px rgba(251, 191, 36, 0.6);
-  border-radius: 4px;
-  padding: 0 2px;
-  transition: all 0.3s ease;
-  animation: pulse-highlight 1.5s infinite;
-}
-
-@keyframes pulse-highlight {
-  0% { transform: scale(1); }
-  50% { transform: scale(1.05); }
-  100% { transform: scale(1); }
-}
-
-/* Search Highlighting */
-.search-highlight {
-  background-color: rgba(255, 235, 59, 0.4);
-  border-bottom: 2px solid rgba(255, 193, 7, 0.5);
-  border-radius: 2px;
-  color: inherit;
-  padding: 1px 0;
-}
-
-.current-search-highlight {
-  background-color: #ff9800 !important;
-  color: white !important;
-  border-bottom-color: #f44336;
-  box-shadow: 0 0 8px rgba(255, 152, 0, 0.6);
-  z-index: 10;
-  position: relative;
-}
-
-.dark .search-highlight {
-  background-color: rgba(255, 235, 59, 0.2);
-  border-bottom-color: rgba(255, 193, 7, 0.3);
-}
-
-.dark .current-search-highlight {
-  background-color: #e65100 !important;
-  box-shadow: 0 0 10px rgba(230, 81, 0, 0.4);
-}
-
-/* Pulse Animation for Active Elements */
-.pulse-ring {
-  animation: pulseRing 2s ease-in-out infinite;
-}
-
-@keyframes pulseRing {
-  0% { box-shadow: 0 0 0 0 var(--glow-color); }
-  70% { box-shadow: 0 0 0 15px transparent; }
-  100% { box-shadow: 0 0 0 0 transparent; }
+  padding-bottom: 1rem;
 }
 
 /* Floating Particles Effect */

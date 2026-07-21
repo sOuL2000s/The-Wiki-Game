@@ -3,8 +3,7 @@
 import React, { useEffect, useState, use, useRef, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import io, { Socket } from 'socket.io-client';
-import { ExternalLink, Loader2, Trophy, Search, Info, X, ChevronUp, ChevronDown } from 'lucide-react';
-import { Menu } from 'lucide-react';
+import { ExternalLink, Loader2, Trophy, Search, Info, X, ChevronUp, ChevronDown, Menu } from 'lucide-react';
 import Mark from 'mark.js';
 import { useGameState } from '@/app/hooks/useGameState';
 
@@ -28,7 +27,7 @@ interface RoomData {
   goalArticle: string;
   status: 'waiting' | 'playing' | 'finished';
   startTime?: number;
-  hostId: string | null; // New: ID of the room host
+  hostId: string | null;
 }
 
 interface ChatMessage {
@@ -47,8 +46,7 @@ interface ArticleSummary {
   };
 }
 
-// Separate component to prevent unnecessary re-renders of the HTML content
-// which would wipe out Mark.js highlights.
+// WikiArticle component - now with full Wikipedia styling preserved
 const WikiArticle = React.memo(({ 
   html, 
   loading, 
@@ -60,10 +58,9 @@ const WikiArticle = React.memo(({
   error: boolean, 
   onClick: (e: React.MouseEvent) => void 
 }) => {
-  console.log("WikiArticle rendering. html length:", html.length);
   return (
     <div 
-      className={`prose transition-all duration-300 ${loading ? 'opacity-50 blur-sm pointer-events-none' : 'opacity-100'} ${error ? 'hidden' : ''}`}
+      className={`wiki-article-container transition-all duration-300 ${loading ? 'opacity-50 blur-sm pointer-events-none' : 'opacity-100'} ${error ? 'hidden' : ''}`}
       onClick={onClick}
       dangerouslySetInnerHTML={{ __html: html }}
     />
@@ -75,9 +72,6 @@ WikiArticle.displayName = 'WikiArticle';
 const serverUrl = process.env.NEXT_PUBLIC_BACKEND_URL || 'http://localhost:3001';
 
 export default function Game({ params }: { params: { roomId: string } }) {
-  // FIX: Unwrap 'params' with React.use() as advised by the error message.
-  // This is necessary because in your experimental Next.js version, 'params'
-  // is treated as a Promise that must be resolved before accessing its properties.
   const resolvedParams = use(params);
   const roomId = resolvedParams.roomId;
   
@@ -95,7 +89,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const [socketInstance, setSocketInstance] = useState<Socket | null>(null);
   const [chatMessages, setChatMessages] = useState<ChatMessage[]>([]);
   const [chatInput, setChatInput] = useState('');
-  const [showMobileSidebar, setShowMobileSidebar] = useState(false); // New: State for mobile sidebar visibility
+  const [showMobileSidebar, setShowMobileSidebar] = useState(false);
   const [hints, setHints] = useState<string[]>([]);
   const [loadingHint, setLoadingHint] = useState(false);
   const [searchQuery, setSearchQuery] = useState('');
@@ -107,23 +101,28 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const headerRef = useRef<HTMLDivElement>(null);
   const articleRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
-  const mainContainerRef = useRef<HTMLDivElement>(null); // Add a ref for the main container
+  const mainContainerRef = useRef<HTMLDivElement>(null);
   const markInstance = useRef<Mark | null>(null);
   const markedNodeRef = useRef<HTMLElement | null>(null);
   
-  // Refs to keep handleWikiClick stable to prevent WikiArticle from re-rendering
+  // Refs to keep handleWikiClick stable
   const roomDataRef = useRef<RoomData | null>(roomData);
   const loadingArticleRef = useRef(false);
-  const lastSavedStateRef = useRef<string>(''); // Added for useGameState optimization
+  const lastSavedStateRef = useRef<string>('');
 
   useEffect(() => { roomDataRef.current = roomData; }, [roomData]);
   useEffect(() => { loadingArticleRef.current = loadingArticle; }, [loadingArticle]);
 
   const [headerHeight, setHeaderHeight] = useState(0);
 
-  // 1. Initialize socket connection and emit joinRoom
+  // Auto-select search text when focusing
+  const handleSearchFocus = useCallback((e: React.FocusEvent<HTMLInputElement>) => {
+    e.target.select();
+  }, []);
+
+  // 1. Initialize socket connection
   useEffect(() => {
-    if (!username || !roomId) { // Ensure username and roomId are available before connecting
+    if (!username || !roomId) {
         return;
     }
 
@@ -141,31 +140,27 @@ export default function Game({ params }: { params: { roomId: string } }) {
       setLoadingArticle(false);
     });
 
-    // New: Listen for chat messages
     newSocket.on('chatMessage', (message: ChatMessage) => {
       setChatMessages((prevMessages) => [...prevMessages, message]);
     });
 
-    // New: Listen for room left confirmation to redirect
     newSocket.on('roomLeftConfirmation', () => {
       alert("You have left the room.");
-      // Redirect to home page
       window.location.href = '/'; 
     });
 
     return () => {
         newSocket.disconnect();
     };
-  }, [roomId, username]); // Dependencies for useEffect
+  }, [roomId, username]);
 
   // 2. Setup socket listeners for room updates
   useEffect(() => {
-    if (!socketInstance) { // Ensure socket is initialized before adding listeners
+    if (!socketInstance) {
       return;
     }
 
     const handleRoomUpdate = (data: RoomData) => {
-      // Detect game reset (transition from playing/finished back to waiting)
       if (data.status === 'waiting' && roomData?.status && roomData.status !== 'waiting') {
         setHtml("");
         setHints([]);
@@ -177,7 +172,6 @@ export default function Game({ params }: { params: { roomId: string } }) {
 
       setRoomData(data);
 
-      // Clear error states if current player successfully navigated
       const myId = socketInstance?.id;
       if (myId) {
         const me = data.players[myId];
@@ -194,14 +188,13 @@ export default function Game({ params }: { params: { roomId: string } }) {
     return () => {
       socketInstance.off('roomUpdate', handleRoomUpdate);
     };
-  }, [socketInstance, roomData]); // Depend on socketInstance and roomData for comparison logic
+  }, [socketInstance, roomData]);
 
-  // Effect to measure header height on component mount and whenever roomData or other layout affecting states change
+  // Effect to measure header height
   useEffect(() => {
     if (headerRef.current) {
       setHeaderHeight(headerRef.current.offsetHeight);
     }
-    // Re-measure on window resize to handle responsiveness
     const handleResize = () => {
       if (headerRef.current) {
         setHeaderHeight(headerRef.current.offsetHeight);
@@ -209,17 +202,15 @@ export default function Game({ params }: { params: { roomId: string } }) {
     };
     window.addEventListener('resize', handleResize);
     return () => window.removeEventListener('resize', handleResize);
-  }, [roomData, showMobileSidebar]); // Also re-measure if sidebar visibility changes which might affect main layout or header rendering
+  }, [roomData, showMobileSidebar]);
 
-  // Fetch current article content (only triggered when roomData.players[me.id].currentArticle changes)
+  // Fetch current article content
   useEffect(() => {
     const fetchContent = async () => {
-      // Safely get 'me' using optional chaining on socketInstance
-      const me = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined; 
+      const me = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined;
       
-      // Only fetch if we are playing, the player is not finished, and we have an article to display
       if (me && !me.finished && roomData?.status === 'playing' && me.currentArticle) {
-        setLoadingArticle(true); // Set loading ON for content fetch
+        setLoadingArticle(true);
         setArticleFetchError(null); 
         setFailedNavigationTarget(null);
         try {
@@ -231,32 +222,29 @@ export default function Game({ params }: { params: { roomId: string } }) {
             const data = await res.json();
             setHtml(data.html); 
             
-            // Scroll the MAIN CONTAINER to top, not window
             if (mainContainerRef.current) {
               mainContainerRef.current.scrollTop = 0;
             }
             
-            setLoadingArticle(false); // Set loading OFF on success
+            setLoadingArticle(false);
         } catch (e: any) { 
-            console.error("Frontend: Error fetching article content for display:", e.message);
+            console.error("Frontend: Error fetching article content:", e.message);
             setArticleFetchError(`Failed to load article content for "${me.currentArticle.replace(/_/g, ' ')}": ${e.message}. You can try retrying.`);
             setFailedNavigationTarget(me.currentArticle); 
             setHtml(`<div class="text-red-500 font-semibold text-center mt-8">
-                      <p>${articleFetchError || `Error fetching content for ${me.currentArticle.replace(/_/g, ' ')}.`}</p>
+                      <p>Error fetching content for ${me.currentArticle.replace(/_/g, ' ')}.</p>
                       <p class="text-sm mt-2">The server acknowledges you are on this page, but your browser couldn't load its content. Try again.</p>
                      </div>`);
-            setLoadingArticle(false); // Set loading OFF on error
+            setLoadingArticle(false);
         }
       }
     };
     fetchContent();
-  }, [roomData?.players?.[socketInstance?.id || '']?.currentArticle, roomData?.status, socketInstance?.id]); // Re-fetch if article or status changes, or socket id becomes available
+  }, [roomData?.players?.[socketInstance?.id || '']?.currentArticle, roomData?.status, socketInstance?.id]);
 
   // Fetch goal article summary
   useEffect(() => {
     const fetchSummary = async () => {
-      // Fetch if we have a goal article and don't have a summary for it yet
-      // This is triggered by roomData.goalArticle changing or goalArticleSummary being reset to null
       if (roomData?.goalArticle && !goalArticleSummary) {
         try {
           const res = await fetch(`${serverUrl}/api/wiki-summary/${encodeURIComponent(roomData.goalArticle)}`);
@@ -274,8 +262,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
     fetchSummary();
   }, [roomData?.goalArticle, goalArticleSummary]);
 
-
-  // New: Auto-scroll chat to bottom when messages change
+  // Auto-scroll chat to bottom
   useEffect(() => {
     if (chatDisplayRef.current) {
       chatDisplayRef.current.scrollTop = chatDisplayRef.current.scrollHeight;
@@ -292,16 +279,10 @@ export default function Game({ params }: { params: { roomId: string } }) {
 
   const scrollToMatch = useCallback((index: number) => {
     const matches = articleRef.current?.querySelectorAll('.search-highlight');
-    console.log(`Scrolling to match ${index + 1}/${matches?.length || 0}`);
-    
     if (matches && matches[index]) {
       matches.forEach(m => m.classList.remove('current-search-highlight'));
       matches[index].classList.add('current-search-highlight');
-      
-      // Use scrollIntoView with better block alignment
       matches[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
-    } else if (matches && matches.length === 0 && index >= 0) {
-      console.warn("Search highlights missing from DOM. React likely re-rendered.");
     }
   }, []);
 
@@ -309,10 +290,6 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const performSearch = useCallback(() => {
     if (!articleRef.current) return;
 
-    // Rebuild the Mark.js instance if the article container was
-    // remounted (e.g. after "Play Again" starts a fresh round) —
-    // otherwise it stays bound to a detached DOM node and highlights
-    // silently fail even though match counts still look correct.
     if (!markInstance.current || markedNodeRef.current !== articleRef.current) {
       markInstance.current = new Mark(articleRef.current);
       markedNodeRef.current = articleRef.current;
@@ -345,7 +322,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
 
   useEffect(() => {
     performSearch();
-  }, [performSearch, html]); // Re-run search when query or content changes
+  }, [performSearch, html]);
 
   const findNext = () => {
     if (searchStats.total === 0) return;
@@ -361,12 +338,13 @@ export default function Game({ params }: { params: { roomId: string } }) {
     scrollToMatch(prevIndex - 1);
   };
 
-  // Keyboard shortcuts
+  // Keyboard shortcuts with auto-select on Ctrl+F
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
         e.preventDefault();
         searchInputRef.current?.focus();
+        searchInputRef.current?.select(); // Auto-select text when Ctrl+F is pressed
       }
       if (e.key === 'Escape') {
         setSearchQuery('');
@@ -389,7 +367,6 @@ export default function Game({ params }: { params: { roomId: string } }) {
     const currentRoomData = roomDataRef.current;
     const isLoading = loadingArticleRef.current;
 
-    // Only proceed if it's a valid link and game is in a playable state
     const myPlayer = socketInstance?.id ? currentRoomData?.players[socketInstance.id] : undefined;
 
     if (anchor && currentRoomData?.status === 'playing' && myPlayer && !myPlayer.finished) {
@@ -400,7 +377,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
         if (!isLoading && socketInstance) { 
           setArticleFetchError(null);
           setFailedNavigationTarget(null);
-          setLoadingArticle(true); // Set loading ON immediately on click
+          setLoadingArticle(true);
           socketInstance.emit('navigate', { roomId, targetTitle: dataTitle });
         }
       }
@@ -411,14 +388,13 @@ export default function Game({ params }: { params: { roomId: string } }) {
     if (socketInstance && failedNavigationTarget) {
       setArticleFetchError(null);
       setFailedNavigationTarget(null);
-      setLoadingArticle(true); // Set loading ON for retry
+      setLoadingArticle(true);
       socketInstance.emit('navigate', { roomId, targetTitle: failedNavigationTarget });
     } else {
         const me = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined;
         if (socketInstance && me?.currentArticle) {
             setArticleFetchError(null);
-            setLoadingArticle(true); // Set loading ON for retry even if target unknown
-            // This will trigger a re-fetch via the useEffect for currentArticle
+            setLoadingArticle(true);
             socketInstance.emit('navigate', { roomId, targetTitle: me.currentArticle.replace(/_/g, ' ') });
         }
     }
@@ -427,28 +403,21 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const handleGoBack = () => {
     setArticleFetchError(null);
     setFailedNavigationTarget(null);
-    setLoadingArticle(false); // Ensure loading is OFF when going back from an error
+    setLoadingArticle(false);
     
-    // If player has history, navigate to the previous article
     const me = socketInstance?.id ? roomData?.players[socketInstance.id] : undefined;
     if (me && me.history.length > 1) {
         const previousArticle = me.history[me.history.length - 2];
         socketInstance.emit('navigate', { roomId, targetTitle: previousArticle.replace(/_/g, ' ') });
-    } else {
-        // If no history, or only start article, just clear the error and display start article again
-        // (the useEffect for currentArticle will re-trigger and fetch the same article if it's still current)
-        console.log("No previous article to go back to.");
     }
   };
 
-  // New: Handle leaving the room
   const handleLeaveRoom = () => {
     if (socketInstance && roomId && confirm("Are you sure you want to leave this room? Your progress will be lost.")) {
       socketInstance.emit('leaveRoom', { roomId });
     }
   };
 
-  // New: Handle sending chat messages
   const handleSendMessage = () => {
     if (socketInstance && chatInput.trim() && username && roomId) {
       socketInstance.emit('chatMessage', { 
@@ -456,14 +425,13 @@ export default function Game({ params }: { params: { roomId: string } }) {
         username, 
         message: chatInput 
       });
-      setChatInput(''); // Clear input after sending
+      setChatInput('');
     }
   };
 
   const getWikiHint = async () => {
     if (!me || me.finished || !roomData || !socketInstance) return;
     
-    // Notify server to deduct points and increment hint count
     socketInstance.emit('requestHint', { roomId });
 
     setLoadingHint(true);
@@ -479,7 +447,6 @@ export default function Game({ params }: { params: { roomId: string } }) {
       const newHints = data.hints && data.hints.length > 0 ? data.hints : ["Try looking for broader topics related to the goal."];
       setHints(newHints);
 
-      // Scroll to the first hinted link if it exists in the article
       setTimeout(() => {
         for (const hint of newHints) {
           const escapedHint = hint.replace(/'/g, "\\'");
@@ -505,7 +472,6 @@ export default function Game({ params }: { params: { roomId: string } }) {
     if (roomData && socketInstance?.id) {
       const me = roomData.players[socketInstance.id];
       if (me) {
-        // Create a string representation to compare
         const stateToSave = {
           currentArticle: me.currentArticle,
           history: me.history,
@@ -514,7 +480,6 @@ export default function Game({ params }: { params: { roomId: string } }) {
         };
         const stateString = JSON.stringify(stateToSave);
         
-        // Only save if the state actually changed
         if (stateString !== lastSavedStateRef.current) {
           lastSavedStateRef.current = stateString;
           saveState(stateToSave);
@@ -523,15 +488,14 @@ export default function Game({ params }: { params: { roomId: string } }) {
     }
   }, [roomData, socketInstance?.id, saveState]);
 
-  if (!roomData || !socketInstance) return ( // Add check for socketInstance here
-    <div className="flex flex-col items-center justify-center h-screen bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl px-6 text-center">
+  if (!roomData || !socketInstance) return (
+    <div className="flex flex-col items-center justify-center h-screen bg-white dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl px-6 text-center">
       <Loader2 className="animate-spin mb-4 text-blue-500" size={32} />
       <p>Getting your race ready...</p>
       <p className="text-sm mt-2 opacity-50">This usually only takes a second.</p>
     </div>
   );
 
-  // Use socketInstance.id to get the current player's data
   const me = roomData.players[socketInstance.id];
 
   return (
@@ -683,7 +647,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
             fixed left-0 bottom-0 z-40 transform transition-transform duration-300 ease-in-out md:static
             ${showMobileSidebar ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
           `}
-          style={{ top: `${headerHeight}px` }} // Apply dynamic top position
+          style={{ top: `${headerHeight}px` }}
         >
           <h2 className="font-bold text-lg mb-4 pb-2 border-b border-slate-300 dark:border-slate-600 text-slate-700 dark:text-slate-200">Players</h2>
           <div className="space-y-3">
@@ -723,7 +687,6 @@ export default function Game({ params }: { params: { roomId: string } }) {
                       {p.lost ? 'ELIMINATED' : <><Trophy className="mr-1" size={12} /> FINISHED! ({Math.floor(p.time || 0)}s)</>}
                     </div>
                   )}
-                  {/* Path Preview */}
                   <div className="mt-2 flex flex-wrap gap-1">
                     {p.history.slice(-3).map((h, i) => (
                       <span key={i} className="text-[9px] bg-slate-200 dark:bg-slate-600 px-1 rounded opacity-70">
@@ -769,9 +732,9 @@ export default function Game({ params }: { params: { roomId: string } }) {
         {/* Main Content Area */}
         <main 
           ref={mainContainerRef}
-          className="flex-1 overflow-y-auto p-4 md:p-10 bg-white dark:bg-slate-900 relative"
+          className="flex-1 overflow-y-auto p-4 md:p-6 lg:p-8 bg-white dark:bg-slate-900 relative"
         >
-          {/* Overlay to close sidebar on mobile when main content is clicked */}
+          {/* Overlay to close sidebar on mobile */}
           {showMobileSidebar && (
             <div 
               className="md:hidden fixed inset-0 bg-black bg-opacity-50 z-30" 
@@ -871,57 +834,60 @@ export default function Game({ params }: { params: { roomId: string } }) {
             </div>
           ) : (
             <>
-              {/* Search Bar for Article */}
+              {/* Enhanced Search Bar - More prominent and Wikipedia-style */}
               {roomData.status === 'playing' && !me?.finished && !loadingArticle && !articleFetchError && (
-                <div className="mb-6 sticky top-0 z-20 bg-white/80 dark:bg-slate-900/80 backdrop-blur-md py-2 border-b border-slate-100 dark:border-slate-800">
-                  <div className="flex flex-col md:flex-row items-center gap-3 max-w-2xl mx-auto px-2">
-                    <div className="relative flex-1 w-full">
-                      <Search className="absolute left-3 top-1/2 -translate-y-1/2 text-slate-400" size={18} />
-                      <input 
-                        ref={searchInputRef}
-                        type="text" 
-                        placeholder="Search article (Ctrl+F)" 
-                        className="w-full pl-10 pr-24 py-2.5 bg-slate-100 dark:bg-slate-800 border-none rounded-xl focus:ring-2 focus:ring-blue-500 outline-none text-sm dark:text-white transition-all shadow-sm"
-                        value={searchQuery}
-                        onChange={(e) => setSearchQuery(e.target.value)}
-                        aria-label="Search article content"
-                      />
-                      {searchQuery && (
-                        <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2">
-                          <span className="text-[10px] font-bold text-slate-400 bg-slate-200 dark:bg-slate-700 px-1.5 py-0.5 rounded" aria-live="polite">
-                            {searchStats.total > 0 ? `${searchStats.current}/${searchStats.total}` : '0/0'}
-                          </span>
-                          <button type="button" onClick={() => setSearchQuery('')} className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200">
-                            <X size={14} />
-                          </button>
-                        </div>
-                      )}
+                <div className="sticky top-0 z-20 bg-white dark:bg-slate-900 border-b border-slate-200 dark:border-slate-700 shadow-sm mb-6">
+                  <div className="max-w-4xl mx-auto px-4 py-3">
+                    <div className="relative flex items-center gap-3">
+                      <div className="relative flex-1">
+                        <Search className="absolute left-4 top-1/2 -translate-y-1/2 text-slate-400" size={20} />
+                        <input 
+                          ref={searchInputRef}
+                          type="text" 
+                          placeholder="Search within this article (Ctrl+F)" 
+                          className="w-full pl-12 pr-32 py-3 bg-slate-50 dark:bg-slate-800 border-2 border-slate-200 dark:border-slate-700 rounded-xl focus:border-blue-500 focus:ring-4 focus:ring-blue-100 dark:focus:ring-blue-900/30 outline-none text-base dark:text-white transition-all duration-200"
+                          value={searchQuery}
+                          onChange={(e) => setSearchQuery(e.target.value)}
+                          onFocus={handleSearchFocus}
+                          aria-label="Search article content"
+                        />
+                        {searchQuery && (
+                          <div className="absolute right-3 top-1/2 -translate-y-1/2 flex items-center gap-2 bg-white dark:bg-slate-700 px-2 py-1 rounded-lg border border-slate-200 dark:border-slate-600">
+                            <span className="text-xs font-mono font-bold text-slate-600 dark:text-slate-300" aria-live="polite">
+                              {searchStats.total > 0 ? `${searchStats.current}/${searchStats.total}` : '0 matches'}
+                            </span>
+                            <button 
+                              type="button" 
+                              onClick={() => setSearchQuery('')} 
+                              className="text-slate-400 hover:text-slate-600 dark:hover:text-slate-200 p-1 rounded hover:bg-slate-100 dark:hover:bg-slate-600 transition-colors"
+                            >
+                              <X size={14} />
+                            </button>
+                          </div>
+                        )}
+                      </div>
+                      
+                      <div className="flex items-center gap-1.5 flex-shrink-0">
+                        <button 
+                          type="button"
+                          onClick={findPrevious}
+                          disabled={searchStats.total === 0}
+                          className="p-2.5 bg-slate-100 dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-lg hover:bg-slate-200 dark:hover:bg-slate-700 disabled:opacity-30 transition-all shadow-sm border border-slate-200 dark:border-slate-700"
+                          title="Previous match (Shift+Enter)"
+                        >
+                          <ChevronUp size={18} />
+                        </button>
+                        <button 
+                          type="button"
+                          onClick={findNext}
+                          disabled={searchStats.total === 0}
+                          className="p-2.5 bg-blue-600 text-white rounded-lg hover:bg-blue-700 disabled:opacity-30 transition-all shadow-sm"
+                          title="Next match (Enter)"
+                        >
+                          <ChevronDown size={18} />
+                        </button>
+                      </div>
                     </div>
-                    
-                    <div className="flex items-center gap-1">
-                      <button 
-                        type="button"
-                        onClick={findPrevious}
-                        disabled={searchStats.total === 0}
-                        className="p-2.5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-30 border border-slate-200 dark:border-slate-700 transition-all shadow-sm"
-                        title="Previous (Shift+Enter)"
-                      >
-                        <ChevronUp size={18} />
-                      </button>
-                      <button 
-                        type="button"
-                        onClick={findNext}
-                        disabled={searchStats.total === 0}
-                        className="p-2.5 bg-white dark:bg-slate-800 text-slate-600 dark:text-slate-300 rounded-xl hover:bg-slate-50 dark:hover:bg-slate-700 disabled:opacity-30 border border-slate-200 dark:border-slate-700 transition-all shadow-sm"
-                        title="Next (Enter)"
-                      >
-                        <ChevronDown size={18} />
-                      </button>
-                    </div>
-
-                    {searchQuery && debouncedSearchQuery && searchStats.total === 0 && (
-                      <p className="text-xs text-red-500 font-medium animate-in fade-in slide-in-from-left-2">No results found</p>
-                    )}
                   </div>
                 </div>
               )}
@@ -930,7 +896,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
                 <div className="bg-amber-50 dark:bg-amber-900/20 border border-amber-200 dark:border-amber-800 p-3 rounded-lg mb-4 flex items-center justify-between animate-in fade-in slide-in-from-top-2">
                   <div className="flex items-center gap-2">
                     <span className="text-amber-600 font-bold text-sm uppercase">Hints:</span>
-                    <div className="flex gap-2">
+                    <div className="flex gap-2 flex-wrap">
                       {hints.map((h, i) => (
                         <span key={i} className="bg-white dark:bg-slate-800 px-2 py-0.5 rounded border border-amber-200 text-xs font-semibold">{h}</span>
                       ))}
@@ -939,6 +905,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
                   <button onClick={() => setHints([])} className="text-amber-500 hover:text-amber-700 text-xs font-bold">Close</button>
                 </div>
               )}
+              
               {loadingArticle && (
                 <div className="fixed inset-0 flex flex-col items-center justify-center bg-black/40 backdrop-blur-sm z-50">
                   <div className="glass rounded-2xl p-8 text-center animate-in fade-in zoom-in duration-300">
@@ -960,12 +927,13 @@ export default function Game({ params }: { params: { roomId: string } }) {
                   </div>
                 </div>
               )}
+              
               {articleFetchError && (
                 <div className="text-red-500 bg-red-50 dark:bg-red-950 p-4 rounded-lg mb-4 border border-red-200 dark:border-red-800 text-center mx-auto max-w-lg">
                   <p className="font-semibold text-lg mb-2">Error!</p>
                   <p className="text-base">{articleFetchError}</p>
                   <div className="flex justify-center space-x-4 mt-4">
-                    {failedNavigationTarget && ( // Show retry button if we know which article failed to load
+                    {failedNavigationTarget && (
                         <button
                             onClick={handleRetry}
                             className="bg-red-600 text-white px-4 py-2 rounded-lg font-semibold hover:bg-red-700 transition-colors"
@@ -982,15 +950,15 @@ export default function Game({ params }: { params: { roomId: string } }) {
                   </div>
                 </div>
               )}
-              {/* Wrap the prose content in a div to handle table overflow */}
-              <div className="article-content-wrapper" ref={articleRef}>
+              
+              {/* Wikipedia-style article container */}
+              <div className="article-content-wrapper max-w-4xl mx-auto" ref={articleRef}>
                 <WikiArticle 
                   html={html} 
                   loading={loadingArticle} 
                   error={!!articleFetchError} 
                   onClick={handleWikiClick} 
                 />
-                {/* When there's an error, display current article name for context */}
                 {articleFetchError && (
                     <div className="text-center text-slate-500 dark:text-slate-400 mt-6">
                         <p>Currently viewing: <span className="font-semibold">{me?.currentArticle.replace(/_/g, ' ') || 'Unknown'}</span></p>
