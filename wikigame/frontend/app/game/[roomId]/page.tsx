@@ -18,6 +18,7 @@ interface Player {
   finished: boolean;
   lost?: boolean;
   time?: number;
+  disconnected?: boolean;
 }
 
 interface RoomData {
@@ -104,6 +105,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
   const articleRef = useRef<HTMLDivElement>(null);
   const searchInputRef = useRef<HTMLInputElement>(null);
   const markInstance = useRef<Mark | null>(null);
+  const markedNodeRef = useRef<HTMLElement | null>(null);
   
   // Refs to keep handleWikiClick stable to prevent WikiArticle from re-rendering
   const roomDataRef = useRef<RoomData | null>(null);
@@ -296,11 +298,14 @@ export default function Game({ params }: { params: { roomId: string } }) {
   // Handle Search Logic with Mark.js
   const performSearch = useCallback(() => {
     if (!articleRef.current) return;
-    
-    console.log("performSearch called. Article text length:", articleRef.current?.textContent?.length);
 
-    if (!markInstance.current) {
+    // Rebuild the Mark.js instance if the article container was
+    // remounted (e.g. after "Play Again" starts a fresh round) —
+    // otherwise it stays bound to a detached DOM node and highlights
+    // silently fail even though match counts still look correct.
+    if (!markInstance.current || markedNodeRef.current !== articleRef.current) {
       markInstance.current = new Mark(articleRef.current);
+      markedNodeRef.current = articleRef.current;
     }
 
     markInstance.current.unmark({
@@ -310,21 +315,16 @@ export default function Game({ params }: { params: { roomId: string } }) {
           return;
         }
 
-        console.log("Before mark. Existing highlights:", articleRef.current?.querySelectorAll(".search-highlight").length);
-
         markInstance.current?.mark(debouncedSearchQuery, {
           className: 'search-highlight',
           acrossElements: true,
           separateWordSearch: false,
           done: (totalMatches) => {
-            console.log("After mark. totalMatches:", totalMatches, "DOM highlights:", articleRef.current?.querySelectorAll(".search-highlight").length);
-            setSearchStats({ 
-              total: totalMatches, 
-              current: totalMatches > 0 ? 1 : 0 
+            setSearchStats({
+              total: totalMatches,
+              current: totalMatches > 0 ? 1 : 0
             });
             if (totalMatches > 0) {
-              // Delay slightly to ensure React has finished any re-renders
-              // triggered by setSearchStats before we attempt to scroll
               setTimeout(() => scrollToMatch(0), 50);
             }
           }
@@ -493,10 +493,10 @@ export default function Game({ params }: { params: { roomId: string } }) {
 
 
   if (!roomData || !socketInstance) return ( // Add check for socketInstance here
-    <div className="flex flex-col items-center justify-center h-screen bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl">
+    <div className="flex flex-col items-center justify-center h-screen bg-slate-50 dark:bg-slate-900 text-slate-500 dark:text-slate-400 font-sans text-xl px-6 text-center">
       <Loader2 className="animate-spin mb-4 text-blue-500" size={32} />
-      <p>Connecting to the room...</p>
-      <p className="text-sm mt-2 opacity-50">If this takes long, ensure the backend is running.</p>
+      <p>Getting your race ready...</p>
+      <p className="text-sm mt-2 opacity-50">This usually only takes a second.</p>
     </div>
   );
 
@@ -550,7 +550,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
       )}
 
       {/* Header */}
-      <div ref={headerRef} className="bg-gradient-to-r from-blue-700 to-indigo-700 text-white p-4 flex flex-col md:flex-row justify-between items-center sticky top-0 z-50 shadow-lg dark:from-slate-800 dark:to-slate-900">
+      <div ref={headerRef} className="bg-gradient-to-r from-blue-700 to-indigo-700 text-white p-3 sm:p-4 flex flex-col md:flex-row justify-between items-center gap-3 md:gap-0 sticky top-0 z-50 shadow-lg dark:from-slate-800 dark:to-slate-900">
         <div className="text-center md:text-left mb-2 md:mb-0 max-w-full md:max-w-[40%]">
           <div className="flex items-center gap-2 justify-center md:justify-start">
             <div className="p-1.5 bg-yellow-400 rounded-lg text-blue-900 shadow-sm hidden md:block">
@@ -590,7 +590,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
           <p className="text-2xl md:text-3xl font-black leading-none text-white drop-shadow-sm">{me?.clicks || 0}</p>
         </div>
 
-        <div className="flex flex-row md:flex-row items-center gap-2 md:gap-4 mt-2 md:mt-0">
+        <div className="flex flex-wrap items-center justify-center gap-2 md:gap-4 mt-3 md:mt-0">
             {roomData.status === 'waiting' && socketInstance?.id === roomData.hostId && (
                 <button 
                     onClick={() => socketInstance?.emit('startGame', roomId)} 
@@ -648,7 +648,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
         <aside 
           id="mobile-sidebar"
           className={`
-            w-72 bg-slate-100 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 p-5 overflow-y-auto shadow-2xl md:shadow-inner
+            w-72 max-w-[85vw] bg-slate-100 dark:bg-slate-800 border-r border-slate-200 dark:border-slate-700 p-4 sm:p-5 overflow-y-auto shadow-2xl md:shadow-inner
             fixed left-0 bottom-0 z-40 transform transition-transform duration-300 ease-in-out md:static
             ${showMobileSidebar ? 'translate-x-0' : '-translate-x-full md:translate-x-0'}
           `}
@@ -672,6 +672,7 @@ export default function Game({ params }: { params: { roomId: string } }) {
                   <div className="flex items-center justify-between mb-1">
                     <span className={`font-semibold text-sm truncate mr-2 ${p.id === socketInstance?.id ? 'text-blue-700 dark:text-blue-300' : 'text-slate-800 dark:text-slate-100'}`}>
                       {p.username} {p.id === socketInstance?.id && '(You)'} {p.id === roomData.hostId && '(Host)'}
+                      {p.disconnected && <span className="text-amber-500 font-normal"> · reconnecting…</span>}
                     </span>
                     <div className="flex flex-col items-end">
                       <span className="text-xs font-mono bg-slate-200 dark:bg-slate-600 text-slate-600 dark:text-slate-200 px-2 py-0.5 rounded-full">

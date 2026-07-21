@@ -2,12 +2,14 @@
 "use client";
 import { useState } from 'react';
 import { useRouter } from 'next/navigation';
+import { Loader2 } from 'lucide-react';
 
 export default function Home() {
   const [username, setUsername] = useState('');
   const [room, setRoom] = useState('');
   const [userError, setUserError] = useState<string | null>(null);
   const [roomError, setRoomError] = useState<string | null>(null);
+  const [isJoining, setIsJoining] = useState(false);
   const router = useRouter();
 
   const validateUser = (u: string) => {
@@ -36,8 +38,9 @@ export default function Home() {
     if (e) e.preventDefault();
     const isUserValid = validateUser(username) && username.length >= 3;
     const isRoomValid = validateRoom(room) && room.length >= 3;
-    
+
     if (isUserValid && isRoomValid) {
+      setIsJoining(true);
       router.push(`/game/${room}?user=${username}`);
     } else {
       if (!isUserValid && username.length < 3) setUserError('Username is too short.');
@@ -92,10 +95,17 @@ export default function Home() {
           </div>
           <button
             type="submit"
-            disabled={!username.trim() || !room.trim()}
+            disabled={!username.trim() || !room.trim() || isJoining}
             className="w-full bg-blue-600 text-white p-3 rounded-lg font-semibold hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-blue-500 focus:ring-offset-2 transition-colors duration-200 disabled:opacity-50 disabled:cursor-not-allowed dark:bg-blue-500 dark:hover:bg-blue-600"
           >
-            Enter Race
+            {isJoining ? (
+              <span className="flex items-center justify-center gap-2">
+                <Loader2 className="animate-spin" size={18} />
+                Joining Race...
+              </span>
+            ) : (
+              'Enter Race'
+            )}
           </button>
         </form>
       </div>

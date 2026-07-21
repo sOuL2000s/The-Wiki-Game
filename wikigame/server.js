@@ -4,7 +4,9 @@ const http = require('http');
 const { Server } = require('socket.io');
 const axios = require('axios');
 const cors = require('cors');
-const cheerio = require('cheerio'); // Import cheerio
+const cheerio = require('cheerio');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(cors());
@@ -13,12 +15,64 @@ const io = new Server(server, {
     cors: { origin: "*" }
 });
 
-const rooms = {};
-
-// IMPORTANT: Wikipedia requires a User-Agent header
 const wikiHeaders = {
     'User-Agent': 'WikiRaceGame/1.0 (contact: your-email@example.com) Axios/1.0'
 };
+
+// ---------- Persistence ----------
+const DATA_FILE = path.join(__dirname, 'rooms-data.json');
+const DISCONNECT_GRACE_MS = 90000; // 90s to reconnect before losing your spot
+
+function loadRoomsFromDisk() {
+    try {
+        if (fs.existsSync(DATA_FILE)) {
+            const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
+            // The server just restarted, so every socket connection is gone.
+            // Treat everyone as "disconnected" and give them a window to rejoin.
+            for (const [roomId, room] of Object.entries(data)) {
+                for (const [socketId, p] of Object.entries(room.players)) {
+                    p.disconnected = true;
+                    p.disconnectTimer = setTimeout(() => {
+                        removePlayerFromRoom(roomId, socketId);
+                    }, DISCONNECT_GRACE_MS);
+                }
+            }
+            return data;
+        }
+    } catch (err) {
+        console.error("Failed to load rooms from disk:", err.message);
+    }
+    return {};
+}
+
+function saveRoomsToDisk() {
+    try {
+        const serializable = {};
+        for (const [roomId, room] of Object.entries(rooms)) {
+            serializable[roomId] = {
+                ...room,
+                players: Object.fromEntries(
+                    Object.entries(room.players).map(([id, p]) => {
+                        const { disconnectTimer, ...rest } = p; // strip non-serializable timer
+                        return [id, rest];
+                    })
+                )
+            };
+        }
+        fs.writeFileSync(DATA_FILE, JSON.stringify(serializable), 'utf8');
+    } catch (err) {
+        console.error("Failed to save rooms to disk:", err.message);
+    }
+}
+
+let saveTimeout = null;
+function scheduleSave() {
+    if (saveTimeout) clearTimeout(saveTimeout);
+    saveTimeout = setTimeout(saveRoomsToDisk, 1500);
+}
+
+const rooms = loadRoomsFromDisk();
+// ----------------------------------
 
 async function getRandomArticle() {
     try {
@@ -265,8 +319,9 @@ async function getArticleSummary(title) {
 io.on('connection', (socket) => {
     socket.on('joinRoom', async ({ roomId, username }) => {
         socket.join(roomId);
-        // Store roomId on the socket for easier lookup on disconnect
         socket.data.roomId = roomId;
+        socket.data.username = username;
+
         if (!rooms[roomId]) {
             const startArt = await getRandomArticle();
             const goalArt = await getRandomArticle();
@@ -276,39 +331,62 @@ io.on('connection', (socket) => {
                 goalArticle: goalArt.title,
                 goalPageId: goalArt.pageid,
                 status: 'waiting',
-                hostId: null // Initialize hostId
+                hostId: null
             };
         }
-        
-        // Assign host if this is the first player
-        if (Object.keys(rooms[roomId].players).length === 0) {
-            rooms[roomId].hostId = socket.id;
+
+        const room = rooms[roomId];
+
+        // Reconnection: if a disconnected player with this username exists,
+        // restore their progress instead of starting them over.
+        const existingEntry = Object.entries(room.players).find(
+            ([, p]) => p.disconnected && p.username.toLowerCase() === username.toLowerCase()
+        );
+
+        if (existingEntry) {
+            const [oldSocketId, existingPlayer] = existingEntry;
+            if (existingPlayer.disconnectTimer) clearTimeout(existingPlayer.disconnectTimer);
+            delete existingPlayer.disconnectTimer;
+            existingPlayer.disconnected = false;
+            existingPlayer.id = socket.id;
+
+            room.players[socket.id] = existingPlayer;
+            delete room.players[oldSocketId];
+            if (room.hostId === oldSocketId) room.hostId = socket.id;
+
+            io.to(roomId).emit('chatMessage', { username: 'System', message: `${username} reconnected.`, timestamp: Date.now() });
+        } else if (!room.players[socket.id]) {
+            if (Object.keys(room.players).length === 0) {
+                room.hostId = socket.id;
+            }
+            room.players[socket.id] = {
+                id: socket.id,
+                username,
+                currentArticle: room.startArticle,
+                history: [room.startArticle],
+                clicks: 0,
+                hintCount: 0,
+                points: 0,
+                finished: false,
+                disconnected: false
+            };
         }
 
-        rooms[roomId].players[socket.id] = {
-            id: socket.id,
-            username,
-            currentArticle: rooms[roomId].startArticle,
-            history: [rooms[roomId].startArticle],
-            clicks: 0,
-            hintCount: 0,
-            points: 0,
-            finished: false
-        };
-        io.to(roomId).emit('roomUpdate', rooms[roomId]);
+        scheduleSave();
+        io.to(roomId).emit('roomUpdate', room);
     });
 
     socket.on('startGame', (roomId) => {
         if (rooms[roomId]) {
             rooms[roomId].status = 'playing';
             rooms[roomId].startTime = Date.now();
+            scheduleSave();
             io.to(roomId).emit('roomUpdate', rooms[roomId]);
         }
     });
 
     socket.on('playAgain', async (roomId) => {
         if (rooms[roomId] && (rooms[roomId].status === 'finished' || rooms[roomId].status === 'playing')) {
-            // Only host can restart
             if (rooms[roomId].hostId !== socket.id) return;
 
             const startArt = await getRandomArticle();
@@ -318,8 +396,7 @@ io.on('connection', (socket) => {
             rooms[roomId].goalArticle = goalArt.title;
             rooms[roomId].goalPageId = goalArt.pageid;
             rooms[roomId].startTime = null;
-            
-            // Reset players
+
             Object.keys(rooms[roomId].players).forEach(id => {
                 const p = rooms[roomId].players[id];
                 p.currentArticle = rooms[roomId].startArticle;
@@ -331,7 +408,8 @@ io.on('connection', (socket) => {
                 p.lost = false;
                 delete p.time;
             });
-            
+
+            scheduleSave();
             io.to(roomId).emit('roomUpdate', rooms[roomId]);
             io.to(roomId).emit('chatMessage', { username: 'System', message: 'The game has been reset for a new round!', timestamp: Date.now() });
         }
@@ -397,23 +475,36 @@ io.on('connection', (socket) => {
             room.status = 'finished';
         }
 
-        // Emit room update to all players
+        scheduleSave();
         io.to(roomId).emit('roomUpdate', room);
     });
 
     socket.on('leaveRoom', ({ roomId }) => {
-        handlePlayerLeave(socket, roomId); // Pass the socket object
-        socket.emit('roomLeftConfirmation'); // Confirm to the leaving client
+        socket.leave(roomId);
+        removePlayerFromRoom(roomId, socket.id);
+        socket.emit('roomLeftConfirmation');
     });
 
     socket.on('disconnect', () => {
-        const disconnectedFromRoomId = socket.data.roomId; // Use stored roomId
-        if (disconnectedFromRoomId) {
-            console.log(`Socket ${socket.id} disconnected from room ${disconnectedFromRoomId}`);
-            handlePlayerLeave(socket, disconnectedFromRoomId); // Pass the socket object
-        } else {
-            console.log(`Socket ${socket.id} disconnected, not found in any active room (socket.data.roomId was not set).`);
-        }
+        const roomId = socket.data.roomId;
+        const room = roomId && rooms[roomId];
+        const player = room && room.players[socket.id];
+        if (!player) return;
+
+        // Don't remove immediately — give them a window to reconnect
+        // (covers page reloads, brief network drops, tab switches, etc).
+        player.disconnected = true;
+        player.disconnectTimer = setTimeout(() => {
+            removePlayerFromRoom(roomId, socket.id);
+        }, DISCONNECT_GRACE_MS);
+
+        scheduleSave();
+        io.to(roomId).emit('roomUpdate', room);
+        io.to(roomId).emit('chatMessage', {
+            username: 'System',
+            message: `${player.username} lost connection. They have a minute or two to reconnect...`,
+            timestamp: Date.now()
+        });
     });
 
     socket.on('requestHint', ({ roomId }) => {
@@ -421,7 +512,8 @@ io.on('connection', (socket) => {
         const player = room?.players[socket.id];
         if (room && player && !player.finished && room.status === 'playing') {
             player.hintCount += 1;
-            player.points -= 50; // Deduct 50 points per hint
+            player.points -= 50;
+            scheduleSave();
             io.to(roomId).emit('roomUpdate', room);
         }
     });
@@ -436,36 +528,33 @@ io.on('connection', (socket) => {
     });
 });
 
-// Helper function to handle player leaving/disconnecting
-function handlePlayerLeave(socket, roomId) { // Pass the socket object directly
-    const socketId = socket.id; // Extract socketId from the socket object
+// Removes a player for good (used both by explicit "leave" and by the
+// disconnect grace-period timer once it expires).
+function removePlayerFromRoom(roomId, socketId) {
     const room = rooms[roomId];
-    if (room && room.players[socketId]) {
-        const username = room.players[socketId].username;
-        delete room.players[socketId];
-        socket.leave(roomId); // This line now correctly uses the passed socket object
+    if (!room || !room.players[socketId]) return;
 
-        // If the host leaves, assign a new host
-        if (room.hostId === socketId) {
-            const remainingPlayerIds = Object.keys(room.players);
-            if (remainingPlayerIds.length > 0) {
-                room.hostId = remainingPlayerIds[0];
-                console.log(`Host of room ${roomId} changed to ${room.players[room.hostId].username}`);
-            } else {
-                room.hostId = null; // No host if no players
-            }
-        }
-
-        if (Object.keys(room.players).length === 0) {
-            delete rooms[roomId]; // Delete room if empty
-            console.log(`Room ${roomId} is now empty and deleted.`);
-        } else {
-            io.to(roomId).emit('roomUpdate', room); // Notify remaining players
-            // Also send a chat message that a player left
-            io.to(roomId).emit('chatMessage', { username: 'System', message: `${username} has left the room.`, timestamp: Date.now() });
-        }
-        console.log(`Player ${username} (${socketId}) left room ${roomId}.`);
+    const username = room.players[socketId].username;
+    if (room.players[socketId].disconnectTimer) {
+        clearTimeout(room.players[socketId].disconnectTimer);
     }
+    delete room.players[socketId];
+
+    if (room.hostId === socketId) {
+        const remainingPlayerIds = Object.keys(room.players);
+        room.hostId = remainingPlayerIds.length > 0 ? remainingPlayerIds[0] : null;
+    }
+
+    if (Object.keys(room.players).length === 0) {
+        delete rooms[roomId];
+        console.log(`Room ${roomId} is now empty and deleted.`);
+        scheduleSave();
+        return;
+    }
+
+    io.to(roomId).emit('roomUpdate', room);
+    io.to(roomId).emit('chatMessage', { username: 'System', message: `${username} has left the room.`, timestamp: Date.now() });
+    scheduleSave();
 }
 
 app.get('/api/wiki/:title', async (req, res) => {

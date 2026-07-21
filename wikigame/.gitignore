@@ -13,3 +13,4 @@ coverage
 *.log
 combined_project_files.txt
 .next
+rooms-data.json
