@@ -265,6 +265,7 @@ export default function Game({ params }: { params: Promise<GameParams> }) {
   const mainContainerRef = useRef<HTMLDivElement>(null);
   const markInstance = useRef<Mark | null>(null);
   const markedNodeRef = useRef<HTMLElement | null>(null);
+  const searchTokenRef = useRef(0);
 
   const roomDataRef = useRef<RoomData | null>(roomData);
   const loadingArticleRef = useRef(false);
@@ -458,11 +459,13 @@ export default function Game({ params }: { params: Promise<GameParams> }) {
 
   const scrollToMatch = useCallback((index: number) => {
     const matches = articleRef.current?.querySelectorAll('.search-highlight');
-    if (matches && matches[index]) {
-      matches.forEach(m => m.classList.remove('current-search-highlight'));
-      matches[index].classList.add('current-search-highlight');
-      matches[index].scrollIntoView({ behavior: 'smooth', block: 'center' });
-    }
+    if (!matches || matches.length === 0) return;
+    const safeIndex = Math.min(Math.max(index, 0), matches.length - 1);
+    matches.forEach(m => m.classList.remove('current-search-highlight'));
+    const el = matches[safeIndex];
+    if (!el) return;
+    el.classList.add('current-search-highlight');
+    el.scrollIntoView({ behavior: 'smooth', block: 'center' });
   }, []);
 
   const performSearch = useCallback(() => {
@@ -473,8 +476,12 @@ export default function Game({ params }: { params: Promise<GameParams> }) {
       markedNodeRef.current = articleRef.current;
     }
 
+    const token = ++searchTokenRef.current;
+
     markInstance.current.unmark({
       done: () => {
+        if (token !== searchTokenRef.current) return;
+
         if (!debouncedSearchQuery.trim()) {
           setSearchStats({ current: 0, total: 0 });
           return;
@@ -484,13 +491,22 @@ export default function Game({ params }: { params: Promise<GameParams> }) {
           acrossElements: true,
           separateWordSearch: false,
           done: (totalMatches: number) => {
-            setSearchStats({
-              total: totalMatches,
-              current: totalMatches > 0 ? 1 : 0
+            if (token !== searchTokenRef.current) return;
+
+            setSearchStats(prev => {
+              const nextCurrent = totalMatches === 0
+                ? 0
+                : Math.min(Math.max(prev.current || 1, 1), totalMatches);
+
+              if (totalMatches > 0) {
+                requestAnimationFrame(() => {
+                  if (token === searchTokenRef.current) {
+                    scrollToMatch(nextCurrent - 1);
+                  }
+                });
+              }
+              return { total: totalMatches, current: nextCurrent };
             });
-            if (totalMatches > 0) {
-              setTimeout(() => scrollToMatch(0), 50);
-            }
           }
         });
       }
@@ -505,7 +521,11 @@ export default function Game({ params }: { params: Promise<GameParams> }) {
     setSearchStats(prev => {
       if (prev.total === 0) return prev;
       const nextIndex = (prev.current % prev.total) + 1;
-      scrollToMatch(nextIndex - 1);
+      // Defer the scroll so it runs after React commits the new count.
+      const token = searchTokenRef.current;
+      requestAnimationFrame(() => {
+        if (token === searchTokenRef.current) scrollToMatch(nextIndex - 1);
+      });
       return { ...prev, current: nextIndex };
     });
   }, [scrollToMatch]);
@@ -514,7 +534,10 @@ export default function Game({ params }: { params: Promise<GameParams> }) {
     setSearchStats(prev => {
       if (prev.total === 0) return prev;
       const prevIndex = prev.current === 1 ? prev.total : prev.current - 1;
-      scrollToMatch(prevIndex - 1);
+      const token = searchTokenRef.current;
+      requestAnimationFrame(() => {
+        if (token === searchTokenRef.current) scrollToMatch(prevIndex - 1);
+      });
       return { ...prev, current: prevIndex };
     });
   }, [scrollToMatch]);
