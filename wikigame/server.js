@@ -19,87 +19,35 @@ const wikiHeaders = {
     'User-Agent': 'WikiRaceGame/1.0 (contact: your-email@example.com) Axios/1.0'
 };
 
+// ---------- Game timing & AI solver ----------
+const ROUND_DURATION_MS = parseInt(process.env.ROUND_DURATION_MS || `${5 * 60 * 1000}`, 10);
+const SOLVER_MAX_DEPTH = 6;              // hard cap on hops
+const SOLVER_MAX_LINKS_PER_NODE = 300;   // cap fan-out (major links only)
+const SOLVER_NODE_BUDGET = 4000;         // stop expanding after N article fetches
+const SOLVER_TIMEOUT_MS = 90 * 1000;     // wall clock cap
+const SOLVER_LAYER_DELAY_MS = 60;        // gentle pacing
+const CLOSENESS_PROBE_TIMEOUT_MS = 1500; // per-player remaining-distance probe
+
 // ---------- Persistence ----------
 const DATA_FILE = path.join(__dirname, 'rooms-data.json');
-const DISCONNECT_GRACE_MS = 120000; // Increased to 2 minutes
-const AUTO_SAVE_INTERVAL = 10000; // Auto-save every 10 seconds
-
-function loadRoomsFromDisk() {
-    try {
-        if (fs.existsSync(DATA_FILE)) {
-            const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-            // Restore room state with reconnection timers
-            for (const [roomId, room] of Object.entries(data)) {
-                // Convert stored timestamps to Date objects if needed
-                if (room.lastActivity) {
-                    room.lastActivity = new Date(room.lastActivity);
-                }
-                
-                for (const [socketId, p] of Object.entries(room.players)) {
-                    p.disconnected = true;
-                    p.reconnectAttempts = 0;
-                    p.lastSeen = Date.now();
-                    p.disconnectTimer = setTimeout(() => {
-                        removePlayerFromRoom(roomId, socketId);
-                    }, DISCONNECT_GRACE_MS);
-                }
-            }
-            return data;
-        }
-    } catch (err) {
-        console.error("Failed to load rooms from disk:", err.message);
-    }
-    return {};
-}
-
-// Auto-save interval
-setInterval(() => {
-    saveRoomsToDisk();
-}, AUTO_SAVE_INTERVAL);
-
-// Improved save with compression and backup
-function saveRoomsToDisk() {
-    try {
-        const serializable = {};
-        for (const [roomId, room] of Object.entries(rooms)) {
-            serializable[roomId] = {
-                ...room,
-                lastActivity: room.lastActivity ? room.lastActivity.toISOString() : null,
-                players: Object.fromEntries(
-                    Object.entries(room.players).map(([id, p]) => {
-                        const { disconnectTimer, ...rest } = p;
-                        return [id, rest];
-                    })
-                )
-            };
-        }
-        
-        // Write to main file
-        fs.writeFileSync(DATA_FILE, JSON.stringify(serializable, null, 2), 'utf8');
-        
-        // Create backup
-        const backupFile = DATA_FILE.replace('.json', '-backup.json');
-        fs.writeFileSync(backupFile, JSON.stringify(serializable, null, 2), 'utf8');
-    } catch (err) {
-        console.error("Failed to save rooms to disk:", err.message);
-    }
-}
-
-
+const DISCONNECT_GRACE_MS = 120000;
+const AUTO_SAVE_INTERVAL = 10000;
 
 let saveTimeout = null;
-const rooms = loadRoomsFromDisk(); // rooms needs to be defined for persistence functions
+const rooms = loadRoomsFromDisk();
 
-// Helper function to prepare room data for client emission (removes non-serializable objects)
+// --- Helpers ---
+function normalizeTitle(t) {
+    return String(t || '').replace(/_/g, ' ').trim();
+}
+
 function getCleanRoomData(room) {
     if (!room) return null;
     return {
         ...room,
-        // Ensure lastActivity is a serializable string for clients
         lastActivity: room.lastActivity ? room.lastActivity.toISOString() : null,
         players: Object.fromEntries(
             Object.entries(room.players).map(([id, p]) => {
-                // Remove the disconnectTimer (circular object) before sending to client
                 const { disconnectTimer, ...cleanPlayer } = p;
                 return [id, cleanPlayer];
             })
@@ -107,28 +55,18 @@ function getCleanRoomData(room) {
     };
 }
 
-// --- Persistence Functions (defined early for hoisting/scoping) ---
-
-// Schedule save function
 function scheduleSave() {
     if (saveTimeout) clearTimeout(saveTimeout);
-    // Give a short delay to batch multiple updates (e.g., rapid clicks)
     saveTimeout = setTimeout(saveRoomsToDisk, 1500);
 }
 
-// Save rooms to disk
 function saveRoomsToDisk() {
     try {
-        // Use the same cleaning logic for disk saving as for client emission
         const serializable = {};
         for (const [roomId, room] of Object.entries(rooms)) {
             serializable[roomId] = getCleanRoomData(room);
         }
-        
-        // Write to main file
         fs.writeFileSync(DATA_FILE, JSON.stringify(serializable, null, 2), 'utf8');
-        
-        // Create backup
         const backupFile = DATA_FILE.replace('.json', '-backup.json');
         fs.writeFileSync(backupFile, JSON.stringify(serializable, null, 2), 'utf8');
     } catch (err) {
@@ -136,8 +74,6 @@ function saveRoomsToDisk() {
     }
 }
 
-// Removes a player for good (used both by explicit "leave" and by the
-// disconnect grace-period timer once it expires).
 function removePlayerFromRoom(roomId, socketId) {
     const room = rooms[roomId];
     if (!room || !room.players[socketId]) return;
@@ -156,42 +92,41 @@ function removePlayerFromRoom(roomId, socketId) {
     if (Object.keys(room.players).length === 0) {
         delete rooms[roomId];
         console.log(`Room ${roomId} is now empty and deleted.`);
-        scheduleSave(); // Save after deleting a room
+        scheduleSave();
         return;
     }
 
-    room.lastActivity = new Date(); // Update activity on player removal
+    room.lastActivity = new Date();
     io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
     io.to(roomId).emit('chatMessage', { username: 'System', message: `${username} has left the room.`, timestamp: Date.now() });
-    scheduleSave(); // Save after player state change
+    scheduleSave();
 }
 
-// Load rooms from disk
 function loadRoomsFromDisk() {
     try {
         if (fs.existsSync(DATA_FILE)) {
             const data = JSON.parse(fs.readFileSync(DATA_FILE, 'utf8'));
-            // Restore room state with reconnection timers
             for (const [roomId, room] of Object.entries(data)) {
-                // Convert stored timestamps to Date objects if needed
-                if (room.lastActivity) {
-                    room.lastActivity = new Date(room.lastActivity);
-                }
-                
+                if (room.lastActivity) room.lastActivity = new Date(room.lastActivity);
+                if (room.roundEndsAt === undefined) room.roundEndsAt = null;
+                if (room.aiSolution === undefined) room.aiSolution = null;
+                if (room.aiSolving === undefined) room.aiSolving = false;
+                if (room.finalRanking === undefined) room.finalRanking = null;
+                if (room.endReason === undefined) room.endReason = null;
+                if (room.solverToken === undefined) room.solverToken = 0;
+
                 for (const [socketId, p] of Object.entries(room.players)) {
-                    // When loading, assume all players are disconnected and set up a grace period
                     p.disconnected = true;
-                    p.reconnectAttempts = 0; // Reset reconnect attempts on server restart
+                    p.reconnectAttempts = 0;
                     p.lastSeen = Date.now();
                     p.disconnectTimer = setTimeout(() => {
                         removePlayerFromRoom(roomId, socketId);
                     }, DISCONNECT_GRACE_MS);
                 }
-                // Ensure status is 'waiting' if not already 'playing' to allow host to restart
                 if (room.status === 'playing' && Object.keys(room.players).length === 0) {
-                    // If a game was playing but all players are gone after restart, reset its state
-                    room.status = 'waiting'; 
+                    room.status = 'waiting';
                     room.startTime = null;
+                    room.roundEndsAt = null;
                 }
             }
             return data;
@@ -202,114 +137,256 @@ function loadRoomsFromDisk() {
     return {};
 }
 
-// Auto-save interval (should call saveRoomsToDisk directly)
+setInterval(() => { saveRoomsToDisk(); }, AUTO_SAVE_INTERVAL);
+
+// Timer tick
 setInterval(() => {
-    saveRoomsToDisk();
-}, AUTO_SAVE_INTERVAL);
+    const now = Date.now();
+    for (const [roomId, room] of Object.entries(rooms)) {
+        if (room.status === 'playing' && room.roundEndsAt && now >= room.roundEndsAt) {
+            endRound(roomId, 'timeout');
+        }
+    }
+}, 1000);
 
-// ----------------------------------
-
+// ---------- Wikipedia helpers ----------
 async function getRandomArticle() {
     try {
         const res = await axios.get('https://en.wikipedia.org/api/rest_v1/page/random/summary', {
             headers: wikiHeaders
         });
-        // Filter out undesirable page types if possible from summary, e.g., 'disambiguation'
         if (res.data.type === 'disambiguation' || res.data.title === 'Special:BadPage' || res.data.extract.length < 50) {
             console.log(`Skipping problematic random article: ${res.data.title}`);
-            return getRandomArticle(); // Try again
+            return getRandomArticle();
         }
-        return {
-            title: res.data.title,
-            pageid: res.data.pageid
-        };
+        return { title: res.data.title, pageid: res.data.pageid };
     } catch (err) {
         console.error("Error getting random article:", err.message);
-        return { title: "Fruit", pageid: 5970 }; // Fallback
+        return { title: "Fruit", pageid: 5970 };
     }
 }
 
-// NEW FUNCTION: Clean Wikipedia HTML
 function cleanWikipediaHtml(htmlContent) {
     const $ = cheerio.load(htmlContent);
 
-    // 1. Remove unwanted elements based on common Wikipedia classes/structure
     $('.mw-editsection, .infobox, .navbox, .reference, .sistersitebox, .noprint, .metadata, .hatnote, .ambox, .dablink, .portalbox, .catlinks, .reflist, #References, #External_links, #See_also, #Further_reading, #Notes, #Bibliography, .printfooter, .vector-menu-content-list, .mw-cite-backlink, .mw-ui-button').remove();
-
-    // 2. Remove all style attributes
     $('*').removeAttr('style');
 
-    // 3. Remove most class attributes, except for specific ones we might want to preserve (e.g., for tables or special cases)
-    // For simplicity, we'll remove most to avoid conflicts and re-style with Tailwind.
     $('*').each((i, el) => {
         const $el = $(el);
-        // Only remove class if it's not a common semantic tag that might need a default styling
-        // E.g., don't remove classes from <table>, <thead>, <tbody>, <th>, <td> if you plan to use those for specific table styling.
-        // For now, let's be aggressive and remove all.
         $el.removeAttr('class');
-        $el.removeAttr('id'); // Remove IDs as well to avoid conflicts
+        $el.removeAttr('id');
         $el.removeAttr('data-mw');
         $el.removeAttr('data-name');
-        // $el.removeAttr('title'); // Remove original title to ensure our custom links work - Keep for external links
     });
 
-    // 4. Adjust internal links: Ensure they only navigate within our game
     $('a').each((i, link) => {
         const $link = $(link);
         let href = $link.attr('href');
-        let title = $link.attr('title'); // Wikipedia links often have a title attribute
-
         if (href && href.startsWith('/wiki/')) {
-            // Keep only the path part and normalize it for the game
-            const articleTitle = href.substring(6).split('#')[0]; // Remove /wiki/ and any #section
-            // Re-set href to a simple # or data-title for frontend to intercept, or just use the title
-            $link.attr('href', '#'); // Prevent default browser navigation
-            $link.attr('data-title', decodeURIComponent(articleTitle).replace(/_/g, ' ')); // Store article title for frontend to pick up
-            $link.removeAttr('title'); // Remove original title from internal links
+            const articleTitle = href.substring(6).split('#')[0];
+            $link.attr('href', '#');
+            $link.attr('data-title', decodeURIComponent(articleTitle).replace(/_/g, ' '));
+            $link.removeAttr('title');
         } else {
-            // For external links, open in new tab and ensure a full URL if it's not already
             if (href && !href.startsWith('http')) {
-                // Prepend base URL for truly relative external links (less common from parse API)
                 $link.attr('href', 'https://en.wikipedia.org' + href);
             }
-            $link.attr('target', '_blank'); // Open external links in new tab
+            $link.attr('target', '_blank');
             $link.attr('rel', 'noopener noreferrer');
         }
     });
 
-    // 5. Make image source URLs absolute
     $('img').each((i, img) => {
         const $img = $(img);
         let src = $img.attr('src');
         if (src && src.startsWith('//')) {
             $img.attr('src', 'https:' + src);
         } else if (src && src.startsWith('/')) {
-            // Handle relative paths for images, though Wikimedia usually uses // or full URLs
             $img.attr('src', 'https://en.wikipedia.org' + src);
         }
-        // Ensure images are not too large by default if width/height are set
         $img.removeAttr('width').removeAttr('height');
     });
 
-    // Add a class to tables for easier styling
     $('table').addClass('wiki-table');
-    
-    // Remove "IPA" pronunciations - often appear in parentheses and are not central to the game
-    // This is a bit more aggressive and might remove some legitimate content, but common in article intros.
     $('span.IPA').remove();
     $('span[lang="en-fonipa"]').remove();
-    $('a.mw-disambig').removeAttr('class'); // Remove this class to style as regular links
+    $('a.mw-disambig').removeAttr('class');
 
     return $.html();
 }
 
-// NEW FUNCTION: Get hints by finding common links
+// Fetch mainspace outgoing links for a title. Returns { canonicalTitle, links } or null.
+async function getLinksForTitle(title) {
+    try {
+        const url = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(title)}&format=json&prop=links&redirects=1&origin=*`;
+        const res = await axios.get(url, { headers: wikiHeaders, timeout: 15000 });
+        if (res.data.error || !res.data.parse?.links) return null;
+
+        const links = res.data.parse.links
+            .filter(l => l.ns === 0 && l.exists !== false)
+            .map(l => normalizeTitle(l['*']))
+            .filter(t => t && !t.includes(':'))
+            .slice(0, SOLVER_MAX_LINKS_PER_NODE);
+
+        return { canonicalTitle: normalizeTitle(res.data.parse.title), links };
+    } catch (err) {
+        return null;
+    }
+}
+
+/**
+ * CORRECTED SOLVER — plain unidirectional BFS.
+ *
+ * Why this is correct where the old bidirectional one was not:
+ *   - Every node stores exactly one `parent` = the node it was FIRST discovered from.
+ *   - Reconstruction walks parents from goal → start, so every hop is a real
+ *     `parent → child` link that we actually observed via getLinksForTitle.
+ *   - No mixing of forward/backward parent maps, so no phantom edges.
+ *
+ * Cost: bounded by SOLVER_NODE_BUDGET + SOLVER_MAX_DEPTH + SOLVER_TIMEOUT_MS.
+ * Wikipedia is small-world (diameter ~4), so in practice this finishes in 1–3s.
+ */
+async function solveOptimalPath(startTitle, goalTitle) {
+    const t0 = Date.now();
+    const start = normalizeTitle(startTitle);
+    const goal = normalizeTitle(goalTitle);
+
+    if (start === goal) {
+        return { path: [start], clicks: 0, timeMs: 0, found: true };
+    }
+
+    // parent map: title -> parent title (or null for start)
+    const parent = new Map();
+    parent.set(start, null);
+    // For the goal, we want to recognize it either by exact title or by
+    // canonical title returned from the API (in case goal title is a redirect).
+    let goalCanonical = goal;
+
+    let layer = [start];
+    let nodesFetched = 0;
+    let depth = 0;
+    let found = false;
+
+    while (layer.length > 0 && depth < SOLVER_MAX_DEPTH && !found) {
+        if (Date.now() - t0 > SOLVER_TIMEOUT_MS) break;
+        if (nodesFetched >= SOLVER_NODE_BUDGET) break;
+
+        // Fetch this entire layer in parallel (bounded)
+        const fetchable = layer.slice(0, Math.max(1, SOLVER_NODE_BUDGET - nodesFetched));
+        const results = await Promise.all(fetchable.map(t => getLinksForTitle(t)));
+        nodesFetched += fetchable.length;
+
+        const nextLayer = [];
+        for (let i = 0; i < fetchable.length; i++) {
+            const title = fetchable[i];
+            const data = results[i];
+            if (!data) continue;
+
+            // If this node was a redirect, note its canonical name.
+            // (Useful in case the goal is written as a redirect.)
+            if (data.canonicalTitle && data.canonicalTitle !== title) {
+                // Alias it so we don't lose the path through the redirect target
+                if (!parent.has(data.canonicalTitle)) {
+                    parent.set(data.canonicalTitle, parent.get(title));
+                }
+            }
+
+            for (const link of data.links) {
+                if (parent.has(link)) continue;
+                parent.set(link, title);
+                nextLayer.push(link);
+
+                if (link === goal || link === goalCanonical) {
+                    found = true;
+                    break;
+                }
+            }
+            if (found) break;
+        }
+
+        if (found) break;
+        layer = nextLayer;
+        depth++;
+        if (SOLVER_LAYER_DELAY_MS > 0) {
+            await new Promise(r => setTimeout(r, SOLVER_LAYER_DELAY_MS));
+        }
+    }
+
+    if (!found) {
+        return { path: [], clicks: -1, timeMs: Date.now() - t0, found: false };
+    }
+
+    // Reconstruct goal → start, then reverse.
+    const path = [];
+    let cur = goal;
+    // If we found via canonical alias, use the canonical key.
+    if (!parent.has(cur)) {
+        // try to find any key equal to goalCanonical
+        cur = goalCanonical;
+        if (!parent.has(cur)) {
+            return { path: [], clicks: -1, timeMs: Date.now() - t0, found: false };
+        }
+    }
+    while (cur !== null && cur !== undefined) {
+        path.unshift(cur);
+        cur = parent.get(cur);
+    }
+
+    // Sanity: verify every consecutive pair is a real edge we observed.
+    // We don't re-fetch here (too expensive); trust the parent map, which
+    // only ever stored edges from getLinksForTitle output.
+
+    return {
+        path,
+        clicks: path.length - 1,
+        timeMs: Date.now() - t0,
+        found: true,
+    };
+}
+
+// Small BFS used at endRound to measure remaining distance from a player's
+// current article to the goal. Returns -1 if not reachable within limits.
+async function shortestRemainingDistance(fromTitle, goalTitle, maxDepth = 4, nodeBudget = 300, timeoutMs = CLOSENESS_PROBE_TIMEOUT_MS) {
+    const t0 = Date.now();
+    const start = normalizeTitle(fromTitle);
+    const goal = normalizeTitle(goalTitle);
+    if (start === goal) return 0;
+
+    const visited = new Set([start]);
+    let layer = [start];
+    let depth = 0;
+    let fetched = 0;
+
+    while (layer.length > 0 && depth < maxDepth) {
+        if (Date.now() - t0 > timeoutMs) break;
+        if (fetched >= nodeBudget) break;
+        const slice = layer.slice(0, Math.max(1, nodeBudget - fetched));
+        const results = await Promise.all(slice.map(t => getLinksForTitle(t)));
+        fetched += slice.length;
+
+        const next = [];
+        for (let i = 0; i < slice.length; i++) {
+            const data = results[i];
+            if (!data) continue;
+            for (const link of data.links) {
+                if (visited.has(link)) continue;
+                if (link === goal) return depth + 1;
+                visited.add(link);
+                next.push(link);
+            }
+        }
+        layer = next;
+        depth++;
+    }
+    return -1;
+}
+
 async function getHint(currentTitle, targetTitle) {
     try {
         const cur = currentTitle.replace(/_/g, ' ');
         const tar = targetTitle.replace(/_/g, ' ');
 
-        // 1. Get current page data and target summary simultaneously
         const [articleData, targetSummary] = await Promise.all([
             getArticleData(cur),
             getArticleSummary(tar)
@@ -319,7 +396,6 @@ async function getHint(currentTitle, targetTitle) {
 
         const currentLinks = articleData.links;
 
-        // 2. Get links that lead TO the target article (backlinks) and target categories
         const [targetRes, targetCats] = await Promise.all([
             axios.get(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(tar)}&prop=linkshere&lhlimit=500&format=json`, { headers: wikiHeaders }),
             axios.get(`https://en.wikipedia.org/w/api.php?action=query&titles=${encodeURIComponent(tar)}&prop=categories&cllimit=50&format=json`, { headers: wikiHeaders })
@@ -329,18 +405,15 @@ async function getHint(currentTitle, targetTitle) {
         const pageId = Object.keys(pages)[0];
         const linksToTarget = pages[pageId]?.linkshere?.map(l => l.title) || [];
 
-        // STRATEGY 0: Check if goal is directly linked
         if (currentLinks.some(l => l.toLowerCase() === tar.toLowerCase())) {
             return [tar];
         }
 
-        // STRATEGY A: Direct 1-click connection (Level 2 BFS - Backlinks)
         const directHints = currentLinks.filter(link => linksToTarget.includes(link));
         if (directHints.length > 0) {
             return directHints.sort((a, b) => a.length - b.length).slice(0, 2);
         }
 
-        // STRATEGY B: Semantic Scoring (Keyword Overlap)
         const getKeywords = (text) => text.toLowerCase()
             .replace(/[^a-z0-9\s]/g, '')
             .split(/\s+/)
@@ -365,19 +438,17 @@ async function getHint(currentTitle, targetTitle) {
 
         if (scoredLinks.length > 0) return scoredLinks.slice(0, 2).map(i => i.link);
 
-        // STRATEGY C: Category matching
         const catPages = targetCats.data.query?.pages || {};
         const catPageId = Object.keys(catPages)[0];
         const categories = (catPages[catPageId]?.categories?.map(c => c.title.replace('Category:', '').toLowerCase()) || [])
             .filter(c => !c.includes('articles') && !c.includes('wikipedia') && !c.includes('webarchive'));
-        
+
         const catHints = currentLinks.filter(link => {
             const l = link.toLowerCase();
             return categories.some(cat => l.includes(cat) || cat.includes(l));
         });
         if (catHints.length > 0) return catHints.slice(0, 2);
-        
-        // STRATEGY D: General direction (Broad topics)
+
         const broadTopics = ['History', 'Geography', 'Science', 'Society', 'Culture', 'Technology', 'Mathematics', 'Philosophy', 'Art', 'Nature'];
         const broadHints = currentLinks.filter(l => broadTopics.some(t => l.includes(t)));
         if (broadHints.length > 0) return broadHints.slice(0, 2);
@@ -391,59 +462,53 @@ async function getHint(currentTitle, targetTitle) {
 
 async function getArticleData(title) {
     try {
-        // Request mobile format for slightly cleaner HTML, but we'll clean it further
         const url = `https://en.wikipedia.org/w/api.php?action=parse&page=${encodeURIComponent(title)}&format=json&prop=text|links&mobileformat=1&origin=*`;
         const res = await axios.get(url, { headers: wikiHeaders });
 
-        // --- IMPROVED ERROR CHECKING HERE ---
         if (res.data.error) {
             console.error("Wikipedia API 'parse' error for article:", title, res.data.error.info);
             return null;
         }
 
         if (!res.data.parse || !res.data.parse.text || !res.data.parse.links) {
-            console.warn(`Wikipedia API 'parse' data missing for title: "${title}". This might be a special page or a problematic redirect.`);
+            console.warn(`Wikipedia API 'parse' data missing for title: "${title}".`);
             return null;
         }
-        
-        // Use the cleaning function here
+
         const rawHtml = res.data.parse.text['*'];
-        const cleanedHtml = cleanWikipediaHtml(rawHtml); // Apply cleaning
-        
-        // Extract links from the CLEANED HTML so hints match visible content
+        const cleanedHtml = cleanWikipediaHtml(rawHtml);
+
         const $ = cheerio.load(cleanedHtml);
         const visibleLinks = [];
         $('a[data-title]').each((i, el) => {
             const title = $(el).attr('data-title');
-            // Only include mainspace links (no colons like Category:, Help:, etc)
             if (title && !title.includes(':') && !visibleLinks.includes(title)) {
                 visibleLinks.push(title);
             }
         });
 
-        return { 
-            html: cleanedHtml, 
-            links: visibleLinks, 
-            title: res.data.parse.title, // Include the canonical title from the API
+        return {
+            html: cleanedHtml,
+            links: visibleLinks,
+            title: res.data.parse.title,
             pageid: res.data.parse.pageid
-        }; 
+        };
     } catch (err) {
         console.error(`Error fetching article data for "${title}":`, err.message);
         return null;
     }
 }
 
-// NEW FUNCTION: Fetch article summary (already present, keep it)
 async function getArticleSummary(title) {
     try {
         const url = `https://en.wikipedia.org/api/rest_v1/page/summary/${encodeURIComponent(title)}`;
         const res = await axios.get(url, { headers: wikiHeaders });
-        
+
         if (res.data.type === 'disambiguation' || res.data.title === 'Not found' || !res.data.extract) {
-            console.warn(`Wikipedia summary API returned incomplete/non-standard data for: "${title}". Skipping.`);
+            console.warn(`Wikipedia summary API returned incomplete data for: "${title}".`);
             return null;
         }
-        
+
         return res.data;
     } catch (err) {
         console.error("Error fetching article summary:", err.message);
@@ -451,6 +516,116 @@ async function getArticleSummary(title) {
     }
 }
 
+// Compute how close a player is to the goal using real BFS distance.
+async function computeRemainingDistance(room, player) {
+    if (!player || !player.currentArticle) return -1;
+    return shortestRemainingDistance(player.currentArticle, room.goalArticle);
+}
+
+async function endRound(roomId, reason) {
+    const room = rooms[roomId];
+    if (!room || room.status === 'finished') return;
+
+    room.status = 'finished';
+    room.roundEndsAt = null;
+    room.endReason = reason;
+
+    const players = Object.values(room.players);
+
+    // For unfinished players, probe their real remaining distance in parallel.
+    const distanceMap = new Map();
+    await Promise.all(players.map(async p => {
+        if (p.finished) {
+            distanceMap.set(p.id, p.lost ? Infinity : -p.clicks); // finished/win sorts by clicks
+        } else {
+            try {
+                const d = await computeRemainingDistance(room, p);
+                distanceMap.set(p.id, d);
+            } catch {
+                distanceMap.set(p.id, -1);
+            }
+        }
+    }));
+
+    players.sort((a, b) => {
+        const aWin = a.finished && !a.lost;
+        const bWin = b.finished && !b.lost;
+        if (aWin && !bWin) return -1;
+        if (bWin && !aWin) return 1;
+        if (aWin && bWin) return (a.clicks || 0) - (b.clicks || 0);
+
+        const ad = distanceMap.get(a.id);
+        const bd = distanceMap.get(b.id);
+        // Players who have a real distance (>=0) rank above those with -1 (unknown)
+        if (ad >= 0 && bd < 0) return -1;
+        if (bd >= 0 && ad < 0) return 1;
+        if (ad >= 0 && bd >= 0) {
+            if (ad !== bd) return ad - bd; // smaller = closer = better
+            return (a.clicks || 0) - (b.clicks || 0);
+        }
+        // Both unknown: more clicks is a weak signal of progress
+        return (b.clicks || 0) - (a.clicks || 0);
+    });
+
+    room.finalRanking = players.map(p => {
+        const raw = distanceMap.get(p.id);
+        return {
+            id: p.id,
+            username: p.username,
+            clicks: p.clicks,
+            finished: p.finished,
+            lost: !!p.lost,
+            time: p.time ?? null,
+            // Store either real remaining distance (>=0) or -1 if unknown.
+            closeness: p.finished && !p.lost ? 0 : (raw >= 0 ? raw : -1),
+        };
+    });
+
+    scheduleSave();
+    io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
+    io.to(roomId).emit('chatMessage', {
+        username: 'System',
+        message: reason === 'timeout'
+            ? "⏰ Time's up! The race has ended."
+            : '🏁 All players have finished!',
+        timestamp: Date.now(),
+    });
+}
+
+// Solver orchestration with token guard.
+function startSolverForRoom(roomId) {
+    const room = rooms[roomId];
+    if (!room) return;
+
+    const token = (room.solverToken || 0) + 1;
+    room.solverToken = token;
+    room.aiSolving = true;
+    room.aiSolution = null;
+
+    const startTitle = room.startArticle;
+    const goalTitle = room.goalArticle;
+
+    solveOptimalPath(startTitle, goalTitle)
+        .then(sol => {
+            const r = rooms[roomId];
+            if (!r || r.solverToken !== token) return;
+            if (r.startArticle !== startTitle || r.goalArticle !== goalTitle) return;
+            r.aiSolution = sol;
+            r.aiSolving = false;
+            scheduleSave();
+            io.to(roomId).emit('roomUpdate', getCleanRoomData(r));
+        })
+        .catch(err => {
+            console.error('Solver failed:', err.message);
+            const r = rooms[roomId];
+            if (!r || r.solverToken !== token) return;
+            r.aiSolution = { path: [], clicks: -1, timeMs: 0, found: false };
+            r.aiSolving = false;
+            io.to(roomId).emit('roomUpdate', getCleanRoomData(r));
+        });
+}
+
+// ----------------------------------
 io.on('connection', (socket) => {
     socket.on('joinRoom', async ({ roomId, username }) => {
         socket.join(roomId);
@@ -466,14 +641,19 @@ io.on('connection', (socket) => {
                 goalArticle: goalArt.title,
                 goalPageId: goalArt.pageid,
                 status: 'waiting',
-                hostId: null
+                hostId: null,
+                roundEndsAt: null,
+                aiSolution: null,
+                aiSolving: false,
+                finalRanking: null,
+                endReason: null,
+                solverToken: 0,
             };
+            startSolverForRoom(roomId);
         }
 
         const room = rooms[roomId];
 
-        // Reconnection: if a disconnected player with this username exists,
-        // restore their progress instead of starting them over.
         const existingEntry = Object.entries(room.players).find(
             ([, p]) => p.disconnected && p.username.toLowerCase() === username.toLowerCase()
         );
@@ -515,8 +695,16 @@ io.on('connection', (socket) => {
         if (rooms[roomId]) {
             rooms[roomId].status = 'playing';
             rooms[roomId].startTime = Date.now();
+            rooms[roomId].roundEndsAt = Date.now() + ROUND_DURATION_MS;
+            rooms[roomId].endReason = null;
+            rooms[roomId].finalRanking = null;
             scheduleSave();
             io.to(roomId).emit('roomUpdate', getCleanRoomData(rooms[roomId]));
+            io.to(roomId).emit('chatMessage', {
+                username: 'System',
+                message: `Race started! You have ${Math.round(ROUND_DURATION_MS / 60000)} minute(s).`,
+                timestamp: Date.now(),
+            });
         }
     });
 
@@ -531,6 +719,11 @@ io.on('connection', (socket) => {
             rooms[roomId].goalArticle = goalArt.title;
             rooms[roomId].goalPageId = goalArt.pageid;
             rooms[roomId].startTime = null;
+            rooms[roomId].roundEndsAt = null;
+            rooms[roomId].aiSolution = null;
+            rooms[roomId].aiSolving = false;
+            rooms[roomId].finalRanking = null;
+            rooms[roomId].endReason = null;
 
             Object.keys(rooms[roomId].players).forEach(id => {
                 const p = rooms[roomId].players[id];
@@ -546,72 +739,152 @@ io.on('connection', (socket) => {
 
             scheduleSave();
             io.to(roomId).emit('roomUpdate', getCleanRoomData(rooms[roomId]));
-            io.to(roomId).emit('chatMessage', { username: 'System', message: 'The game has been reset for a new round!', timestamp: Date.now() });
+            io.to(roomId).emit('chatMessage', { username: 'System', message: 'New round! Solver is computing the optimal path...', timestamp: Date.now() });
+
+            startSolverForRoom(roomId);
         }
     });
 
+    // Core navigation handler
     socket.on('navigate', async ({ roomId, targetTitle }) => {
         const room = rooms[roomId];
         const player = room?.players[socket.id];
         if (!room || !player || player.finished) return;
+        if (room.status !== 'playing') return;
+        if (room.roundEndsAt && Date.now() >= room.roundEndsAt) return;
 
-        // Normalize titles for Wikipedia API
         const normalizedTarget = targetTitle.replace(/ /g, '_');
-
-        // IMPORTANT: Try to fetch the article data before committing to the navigation
-        // This ensures we only navigate to existing, loadable articles
         const articleData = await getArticleData(normalizedTarget);
 
         if (!articleData) {
-            // Article could not be found or loaded by the backend
-            console.warn(`Player ${player.username} attempted to navigate to "${targetTitle}" which could not be loaded.`);
             socket.emit('articleNavigationError', {
                 message: `Oops! We couldn't load "${targetTitle}". It might have been deleted, renamed, or there was a temporary issue.`,
-                failedTargetTitle: targetTitle // Send the original target title back for a retry button
+                failedTargetTitle: targetTitle
             });
-            return; // Do not update player state or emit roomUpdate for this navigation
+            return;
         }
 
-        // Use the actual title returned from Wikipedia API (handles redirects)
+        // Guard against duplicate rapid clicks on the same target
         const canonicalTitle = articleData.title.replace(/ /g, '_');
-        const currentPageId = articleData.pageid;
+        if (player.currentArticle === canonicalTitle) return;
 
-        // If article data was successfully fetched, update player's state
         player.currentArticle = canonicalTitle;
         player.clicks += 1;
         player.history.push(canonicalTitle);
-        player.points -= 10; // Deduct 10 points per click
+        player.points -= 10;
 
-        // Compare using pageId for more reliable win detection (handles redirects/normalization)
-        if (currentPageId === room.goalPageId) {
+        if (articleData.pageid === room.goalPageId) {
             player.finished = true;
             player.time = (Date.now() - room.startTime) / 1000;
-            player.points += Math.max(0, 1000 - (player.clicks * 20)); // Bonus points based on efficiency
+            player.points += Math.max(0, 1000 - (player.clicks * 20));
             io.to(roomId).emit('chatMessage', { username: 'System', message: `${player.username} reached the goal in ${player.clicks} clicks!`, timestamp: Date.now() });
         }
 
-        // Logic: If someone has finished, check if other players have already exceeded the winner's clicks
-        // In a "Competitive" race, you can't win if you have more clicks than the current winner
         const finishers = Object.values(room.players).filter(p => p.finished && !p.lost);
         if (finishers.length > 0) {
             const bestClicks = Math.min(...finishers.map(p => p.clicks));
             Object.values(room.players).forEach(p => {
                 if (!p.finished && p.clicks > bestClicks) {
                     p.finished = true;
-                    p.lost = true; // Mark as lost because they can't beat the current leader
+                    p.lost = true;
                     io.to(roomId).emit('chatMessage', { username: 'System', message: `${p.username} has been eliminated (too many clicks).`, timestamp: Date.now() });
                 }
             });
         }
 
-        // Check if everyone is finished
         const allFinished = Object.values(room.players).every(p => p.finished);
         if (allFinished) {
-            room.status = 'finished';
+            endRound(roomId, 'allFinished');
+        } else {
+            scheduleSave();
+            io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
         }
+    });
+
+    // NEW: back navigation without penalizing clicks
+    socket.on('goBack', async ({ roomId }) => {
+        const room = rooms[roomId];
+        const player = room?.players[socket.id];
+        if (!room || !player || player.finished) return;
+        if (room.status !== 'playing') return;
+        if (room.roundEndsAt && Date.now() >= room.roundEndsAt) return;
+        if (player.history.length <= 1) return;
+
+        const previousArticle = player.history[player.history.length - 2];
+        // Validate the article still loads
+        const articleData = await getArticleData(previousArticle);
+        if (!articleData) {
+            socket.emit('articleNavigationError', {
+                message: `Couldn't reload "${previousArticle.replace(/_/g, ' ')}".`,
+                failedTargetTitle: previousArticle.replace(/_/g, ' '),
+            });
+            return;
+        }
+
+        // Pop history (remove current), but DO NOT increment clicks or deduct points.
+        player.history.pop();
+        player.currentArticle = articleData.title.replace(/ /g, '_');
 
         scheduleSave();
         io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
+    });
+
+    // NEW: retry the last failed target without penalizing clicks
+    socket.on('retryNavigation', async ({ roomId, targetTitle }) => {
+        const room = rooms[roomId];
+        const player = room?.players[socket.id];
+        if (!room || !player || player.finished) return;
+        if (room.status !== 'playing') return;
+        if (room.roundEndsAt && Date.now() >= room.roundEndsAt) return;
+
+        const normalizedTarget = targetTitle.replace(/ /g, '_');
+        const articleData = await getArticleData(normalizedTarget);
+
+        if (!articleData) {
+            socket.emit('articleNavigationError', {
+                message: `Still couldn't load "${targetTitle}".`,
+                failedTargetTitle: targetTitle,
+            });
+            return;
+        }
+
+        const canonicalTitle = articleData.title.replace(/ /g, '_');
+        if (player.currentArticle === canonicalTitle) return;
+
+        // Retry is treated like a normal navigation (it counts as a click because
+        // the player is genuinely moving forward), but if the target was the SAME
+        // as the current page we bail above.
+        player.currentArticle = canonicalTitle;
+        player.clicks += 1;
+        player.history.push(canonicalTitle);
+        player.points -= 10;
+
+        if (articleData.pageid === room.goalPageId) {
+            player.finished = true;
+            player.time = (Date.now() - room.startTime) / 1000;
+            player.points += Math.max(0, 1000 - (player.clicks * 20));
+            io.to(roomId).emit('chatMessage', { username: 'System', message: `${player.username} reached the goal in ${player.clicks} clicks!`, timestamp: Date.now() });
+        }
+
+        const finishers = Object.values(room.players).filter(p => p.finished && !p.lost);
+        if (finishers.length > 0) {
+            const bestClicks = Math.min(...finishers.map(p => p.clicks));
+            Object.values(room.players).forEach(p => {
+                if (!p.finished && p.clicks > bestClicks) {
+                    p.finished = true;
+                    p.lost = true;
+                    io.to(roomId).emit('chatMessage', { username: 'System', message: `${p.username} has been eliminated (too many clicks).`, timestamp: Date.now() });
+                }
+            });
+        }
+
+        const allFinished = Object.values(room.players).every(p => p.finished);
+        if (allFinished) {
+            endRound(roomId, 'allFinished');
+        } else {
+            scheduleSave();
+            io.to(roomId).emit('roomUpdate', getCleanRoomData(room));
+        }
     });
 
     socket.on('leaveRoom', ({ roomId }) => {
@@ -626,8 +899,6 @@ io.on('connection', (socket) => {
         const player = room && room.players[socket.id];
         if (!player) return;
 
-        // Don't remove immediately — give them a window to reconnect
-        // (covers page reloads, brief network drops, tab switches, etc).
         player.disconnected = true;
         player.disconnectTimer = setTimeout(() => {
             removePlayerFromRoom(roomId, socket.id);
@@ -653,24 +924,34 @@ io.on('connection', (socket) => {
         }
     });
 
-    socket.on('chatMessage', ({ roomId, username, message }) => {
+    // FIXED: ignore client-supplied username, use the server-side one
+    socket.on('chatMessage', ({ roomId, message }) => {
         const room = rooms[roomId];
-        if (room && room.players[socket.id]) {
-            // Sanitize message to prevent XSS
-            const sanitizedMessage = message.replace(/</g, "&lt;").replace(/>/g, "&gt;");
-            io.to(roomId).emit('chatMessage', { username, message: sanitizedMessage, timestamp: Date.now() });
+        const player = room?.players[socket.id];
+        if (room && player) {
+            const sanitizedMessage = String(message || '').replace(/</g, "&lt;").replace(/>/g, "&gt;").slice(0, 500);
+            io.to(roomId).emit('chatMessage', {
+                username: player.username,
+                message: sanitizedMessage,
+                timestamp: Date.now()
+            });
         }
     });
 });
 
-app.get('/api/wiki/:title', async (req, res) => {
-    const data = await getArticleData(req.params.title);
+// FIXED: catch-all for titles containing slashes (e.g. "AC/DC")
+app.get('/api/wiki/*', async (req, res) => {
+    const title = (req.params[0] || '').split('?')[0];
+    if (!title) return res.status(400).json({ error: "Title required" });
+    const data = await getArticleData(title);
     if (data) res.json(data);
     else res.status(404).json({ error: "Article not found" });
 });
 
-app.get('/api/wiki-summary/:title', async (req, res) => {
-    const data = await getArticleSummary(req.params.title);
+app.get('/api/wiki-summary/*', async (req, res) => {
+    const title = (req.params[0] || '').split('?')[0];
+    if (!title) return res.status(400).json({ error: "Title required" });
+    const data = await getArticleSummary(title);
     if (data) res.json(data);
     else res.status(404).json({ error: "Summary not found" });
 });
@@ -680,5 +961,5 @@ app.get('/api/wiki-hint/:current/:target', async (req, res) => {
     res.json({ hints });
 });
 
-const PORT = process.env.PORT || 3001; // Use Render's assigned port, or 3001 locally
+const PORT = process.env.PORT || 3001;
 server.listen(PORT, () => console.log(`Server running on port ${PORT}`));
